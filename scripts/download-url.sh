@@ -45,4 +45,6 @@ if [ "${NO_VERIFY:-}" != "1" ]; then
     CODE=$(probe "$URL")
     ok "$CODE" || echo "WARNING: could not verify the download URL (last answer: $CODE). It is printed anyway." >&2
 fi
-echo "$URL"
+
+# Some panels (ZAP-Hosting) only accept URLs that end in ".iso". The storage ignores unknown parameters.
+echo "${URL}&filename=proxmox-ve-auto.iso"
