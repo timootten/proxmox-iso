@@ -1,0 +1,85 @@
+name: Build Proxmox ISO
+
+on:
+  workflow_dispatch:
+    inputs:
+      pve_iso:
+        description: 'Proxmox ISO file name or "latest"'
+        default: 'latest'
+      fqdn:
+        description: 'Hostname (FQDN)'
+        default: 'pve.timootten.com'
+      network_mode:
+        description: 'dhcp or static'
+        default: 'dhcp'
+        type: choice
+        options: [dhcp, static]
+      ip_cidr:
+        description: 'static only, e.g. 5.175.223.10/24'
+        default: ''
+      gateway:
+        description: 'static only'
+        default: ''
+      dns_server:
+        description: 'DNS server'
+        default: '1.1.1.1'
+      templates:
+        description: 'VM templates to create on first boot (space separated, "none" = skip)'
+        default: 'de/debian-13'
+  push:
+    branches: [main]
+    paths: ['scripts/**', '.github/workflows/build-iso.yml']
+  schedule:
+    - cron: '0 4 1 * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-iso
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - name: Install tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl gnupg git xorriso jq openssl
+          curl -fsSL https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gpg \
+            -o /usr/share/keyrings/proxmox-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/proxmox-archive-keyring.gpg] http://download.proxmox.com/debian/pve trixie pve-no-subscription" \
+            > /etc/apt/sources.list.d/pve.list
+          apt-get update
+          apt-get install -y --no-install-recommends proxmox-auto-install-assistant
+
+      - uses: actions/checkout@v4
+
+      - name: Build ISO
+        env:
+          PVE_ISO: ${{ inputs.pve_iso || 'latest' }}
+          FQDN: ${{ inputs.fqdn || 'pve.timootten.com' }}
+          NETWORK_MODE: ${{ inputs.network_mode || 'dhcp' }}
+          IP_CIDR: ${{ inputs.ip_cidr }}
+          GATEWAY: ${{ inputs.gateway }}
+          DNS_SERVER: ${{ inputs.dns_server || '1.1.1.1' }}
+          TEMPLATES: ${{ github.event_name == 'workflow_dispatch' && inputs.templates || 'de/debian-13' }}
+          GITHUB_KEYS_USER: ${{ github.repository_owner }}
+        run: ./scripts/build-iso.sh
+
+      - name: Publish release "latest"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Proxmox VE auto-install ISO
+          body: |
+            Unattended Proxmox VE installer. Built from the official Proxmox ISO.
+            Login: SSH key only (keys of github.com/${{ github.repository_owner }}). Set a password with `passwd` to use the web interface.
+
+            Direct link: https://github.com/${{ github.repository }}/releases/download/latest/proxmox-ve-auto.iso
+          files: |
+            out/proxmox-ve-auto.iso
+            out/proxmox-ve-auto.iso.sha256
+          make_latest: true
