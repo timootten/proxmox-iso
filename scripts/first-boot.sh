@@ -36,8 +36,9 @@ step() {
 }
 
 wait_for_network() {
+    # HTTP instead of ping: ICMP is blocked in many networks, apt needs HTTP anyway
     for _ in $(seq 1 36); do
-        ping -c1 -W2 1.1.1.1 >/dev/null 2>&1 && return 0
+        curl -fsSI --max-time 5 http://deb.debian.org/debian/ >/dev/null 2>&1 && return 0
         sleep 5
     done
     echo "no network after 3 minutes"
