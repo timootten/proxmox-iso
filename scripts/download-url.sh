@@ -1,7 +1,7 @@
 #!/bin/bash
 # Prints a short-lived direct download URL of the latest ISO.
 # Needed because the repository is private: the permanent release URL requires a login.
-# Paste the printed URL into the ISO import of your hosting panel right away (it expires after a few minutes).
+# Paste the printed URL into the ISO import of your hosting panel right away (it is valid for about one hour).
 #   ./scripts/download-url.sh [owner/repo]
 set -euo pipefail
 

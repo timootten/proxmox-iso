@@ -12,7 +12,7 @@ Builds an unattended Proxmox VE installation ISO with GitHub Actions and publish
    ./scripts/download-url.sh
    ```
 
-   The repository is private, so the permanent release URL needs a login. The script prints a short-lived direct URL. Paste it into the ISO import of your provider straight away, it expires after a few minutes.
+   The repository is private, so the permanent release URL needs a login. The script prints a short-lived direct URL. Paste it into the ISO import of your provider straight away, it is valid for about one hour.
 4. Boot the server from the ISO. The installation runs without questions and the server reboots.
 5. `ssh root@<ip>`, then `passwd` (needed for the web interface on port 8006).
 
