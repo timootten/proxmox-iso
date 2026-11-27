@@ -52,7 +52,7 @@ Renovate (`renovate.json`) pins GitHub Actions to commit hashes and opens update
 ## Network
 
 - **vmbr0**: the public uplink with the host address (IPv4 and/or IPv6).
-- **vmbr1**: private network for VMs with IPv4 (`10.10.0.1/24`) and IPv6 (`fd10:10::1/64`, a private unique local range). Source NAT (and NAT66) through vmbr0 lets the VMs reach the internet. `dnsmasq` answers on this bridge only: DHCP (`.100` to `.200`), router advertisements for IPv6 and DNS, and it forwards to all four resolvers. IPv4 NAT is off on IPv6-only servers.
+- **vmbr1**: private network for VMs with IPv4 (`10.10.0.1/24`) and IPv6 (`fd10:10::1/64`, a private unique local range). Source NAT (and NAT66) through vmbr0 lets the VMs reach the internet. `dnsmasq` only does DHCP (`.100` to `.200`) and IPv6 router advertisements on this bridge, **its DNS function is off**. The VMs get the public resolvers directly (`1.1.1.1`, `8.8.8.8`, and the Cloudflare and Google IPv6 addresses when the host has IPv6). IPv4 NAT is off on IPv6-only servers.
 - **IPv6**: the installer takes one address, IPv4 if there is one. The IPv6 address is added on the first boot. With a gateway outside of the prefix (routed /64) the default route is set with `onlink`.
 - **DNS**: `1.1.1.1`, `8.8.8.8`, Cloudflare IPv6, Google IPv6. Linux uses at most three, so the fourth is only a note. On IPv6-only servers the IPv6 resolvers come first.
 - **Static routes**: `config/static-routes.conf`, one `ip route` line each (`-6 ` prefix for IPv6). It becomes `/etc/proxmox-static-routes.conf`, applied at every boot by `static-routes.service`. Change it later, then `systemctl restart static-routes`.

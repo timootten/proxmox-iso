@@ -299,10 +299,8 @@ host_firewall() {
         echo "IN ACCEPT -p ipv6-icmp"
         echo "IN ACCEPT -p udp -sport 67 -dport 68"
         if [ "$PRIVATE_NET" = "true" ]; then
-            # VMs on the private bridge may use DHCP and DNS of the host
+            # VMs on the private bridge may use DHCP and router advertisements of the host
             echo "IN ACCEPT -iface vmbr1 -p udp -dport 67"
-            echo "IN ACCEPT -iface vmbr1 -p udp -dport 53"
-            echo "IN ACCEPT -iface vmbr1 -p tcp -dport 53"
             echo "IN ACCEPT -iface vmbr1 -p ipv6-icmp"
             echo "IN ACCEPT -iface vmbr1 -p udp -dport 547"
         fi
@@ -376,23 +374,30 @@ NAT6
 }
 
 private_dhcp() {
-    # dnsmasq answers DHCP, router advertisements (IPv6) and DNS on vmbr1 only. The config is written before the
-    # package is installed, so it never listens on the public interface.
+    # dnsmasq only does DHCP and router advertisements on vmbr1. Its DNS function is switched off (port=0):
+    # the VMs get the public resolvers (Cloudflare, Google) directly, the host is not a resolver for them.
+    # The config is written before the package is installed, so it never listens on the public interface.
     mkdir -p /etc/dnsmasq.d /etc/systemd/system/dnsmasq.service.d
+    local d dns4="" dns6=""
+    for d in $DNS_SERVERS; do
+        case "$d" in
+            *:*) dns6="${dns6:+$dns6,}[$d]" ;;
+            *)   dns4="${dns4:+$dns4,}$d" ;;
+        esac
+    done
     {
+        echo "port=0"
         echo "interface=vmbr1"
         echo "bind-dynamic"
         echo "dhcp-range=$PRIVATE_NET_DHCP_START,$PRIVATE_NET_DHCP_END,$PRIVATE_NET_MASK,12h"
         echo "dhcp-option=option:router,$PRIVATE_NET_ADDRESS"
-        echo "dhcp-option=option:dns-server,$PRIVATE_NET_ADDRESS"
+        [ -n "$dns4" ] && echo "dhcp-option=option:dns-server,$dns4"
         if [ "$PRIVATE_NET_IPV6_CIDR" != "none" ]; then
             echo "enable-ra"
             echo "dhcp-range=::,constructor:vmbr1,ra-only,64,12h"
-            echo "dhcp-option=option6:dns-server,[$PRIVATE_NET_IPV6_ADDRESS]"
+            # IPv6 resolvers only when the host has an IPv6 uplink that NAT66 can use
+            [ -n "$IPV6_CIDR" ] && [ -n "$dns6" ] && echo "dhcp-option=option6:dns-server,$dns6"
         fi
-        echo "no-resolv"
-        local d
-        for d in $DNS_SERVERS; do echo "server=$d"; done
     } > /etc/dnsmasq.d/vmbr1.conf
     cat > /etc/systemd/system/dnsmasq.service.d/override.conf <<'UNIT'
 [Unit]
