@@ -84,7 +84,7 @@ The generator is in `templates/` (`generate-template.sh`, `global.conf`, `motd.s
 
 `TEMPLATES` in `config/server.env` adds single names, for example `fedora-45 rocky-9`. Available: `debian-12`, `debian-13`, `ubuntu-22.04`, `ubuntu-24.04`, `ubuntu-26.04`, `fedora-45`, `rocky-9`, `almalinux-9`, `archlinux`, `customs/debian-13-docker`.
 
-Templates use qcow2 on directory storage (`vps`) or ZFS volumes (`baremetal`). They sit on the private bridge `vmbr1` (IPv4 by DHCP, IPv6 by router advertisement) and carry your SSH key, so a clone can be started and used right away:
+Templates use qcow2 on directory storage (`vps`) or ZFS volumes (`baremetal`). They sit on the private bridge `vmbr1` (IPv4 by DHCP, IPv6 by router advertisement) and carry your SSH key and all four name servers as cloud-init DNS settings (`1.1.1.1`, `8.8.8.8`, Cloudflare and Google IPv6), so a clone can be started and used right away:
 
 ```bash
 qm clone 9013 100 --name test     # linked clone, ready in seconds

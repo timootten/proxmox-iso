@@ -591,6 +591,11 @@ configure_vm() {
     # Set cloud-init user and enable root login
     qm set "$VM_ID" --ciuser "$CLOUD_INIT_USER"
 
+    # Name servers (TEMPLATE_NAMESERVER, space separated): clones inherit them as cloud-init DNS settings
+    if [ -n "${TEMPLATE_NAMESERVER:-}" ]; then
+        qm set "$VM_ID" --nameserver "$TEMPLATE_NAMESERVER"
+    fi
+
     # SSH keys (SSH_KEYS_FILE): clones inherit them, so they can be started and used right away
     if [ -n "${SSH_KEYS_FILE:-}" ] && [ -s "$SSH_KEYS_FILE" ]; then
         qm set "$VM_ID" --sshkeys "$SSH_KEYS_FILE"

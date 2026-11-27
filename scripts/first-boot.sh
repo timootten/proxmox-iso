@@ -475,7 +475,7 @@ vm_templates() {
     local t rc=0
     for t in $TEMPLATES; do
         echo "--- template $t"
-        DEFAULT_STORAGE=$storage DEFAULT_BRIDGE="$TEMPLATE_BRIDGE" TEMPLATE_IPCONFIG="ip=dhcp,ip6=auto" \
+        DEFAULT_STORAGE=$storage DEFAULT_BRIDGE="$TEMPLATE_BRIDGE" TEMPLATE_IPCONFIG="ip=dhcp,ip6=auto" TEMPLATE_NAMESERVER="$DNS_SERVERS" \
             SSH_KEYS_FILE=/etc/template-sshkeys.pub \
             BRAND_DOCS_URL="$BRAND_DOCS_URL" BRAND_SUPPORT_URL="$BRAND_SUPPORT_URL" \
             bash generate-template.sh "$t" </dev/null || { echo "template $t failed"; rc=1; }
@@ -490,6 +490,7 @@ template_refresh() {
 DEFAULT_STORAGE="$storage"
 DEFAULT_BRIDGE="$TEMPLATE_BRIDGE"
 TEMPLATE_IPCONFIG="ip=dhcp,ip6=auto"
+TEMPLATE_NAMESERVER="$DNS_SERVERS"
 SSH_KEYS_FILE="/etc/template-sshkeys.pub"
 BRAND_DOCS_URL="$BRAND_DOCS_URL"
 BRAND_SUPPORT_URL="$BRAND_SUPPORT_URL"
@@ -501,7 +502,7 @@ ENVF
 # Templates that still have linked clones are kept: Proxmox refuses to destroy them.
 set -u
 . /etc/default/template-refresh
-export DEFAULT_STORAGE DEFAULT_BRIDGE TEMPLATE_IPCONFIG SSH_KEYS_FILE BRAND_DOCS_URL BRAND_SUPPORT_URL ASSUME_YES=1 REFRESH_IMAGE=1
+export DEFAULT_STORAGE DEFAULT_BRIDGE TEMPLATE_IPCONFIG TEMPLATE_NAMESERVER SSH_KEYS_FILE BRAND_DOCS_URL BRAND_SUPPORT_URL ASSUME_YES=1 REFRESH_IMAGE=1
 cd /opt/template-generator || exit 1
 rc=0
 for t in $TEMPLATES; do
