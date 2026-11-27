@@ -51,12 +51,18 @@ EXPECTED=$(curl -fsSL "$BASE_URL/SHA256SUMS" | awk -v f="$PVE_ISO" '$2==f {print
 [ -n "$EXPECTED" ] || { echo "No checksum found for $PVE_ISO" >&2; exit 1; }
 echo "$EXPECTED  work/$PVE_ISO" | sha256sum -c -
 
-echo "==> Reading SSH keys from github.com/$GITHUB_KEYS_USER.keys"
-KEYS_JSON=$(curl -fsSL "https://github.com/$GITHUB_KEYS_USER.keys" | grep -E '^(ssh|ecdsa|sk-)' | jq -R . | jq -cs .)
+echo "==> Collecting SSH keys (config/authorized_keys and github.com/$GITHUB_KEYS_USER.keys)"
+ALL_KEYS=$(
+    { [ -f config/authorized_keys ] && cat config/authorized_keys
+      curl -fsSL "https://github.com/$GITHUB_KEYS_USER.keys" || true
+    } | grep -E '^(ssh-|ecdsa-|sk-)' | sort -u || true
+)
+KEYS_JSON=$(printf '%s\n' "$ALL_KEYS" | grep -E '^(ssh-|ecdsa-|sk-)' | jq -R . | jq -cs . || echo '[]')
 if [ "$(echo "$KEYS_JSON" | jq length)" -eq 0 ]; then
-    echo "No SSH keys found for $GITHUB_KEYS_USER. The server would be unreachable. Aborting." >&2
+    echo "No SSH keys found (config/authorized_keys or GitHub). The server would be unreachable. Aborting." >&2
     exit 1
 fi
+echo "==> $(echo "$KEYS_JSON" | jq length) SSH key(s) will be installed"
 
 # The root password is random and never stored: login is by SSH key only.
 # Set a password later with 'passwd' to use the web interface.

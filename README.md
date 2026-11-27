@@ -59,3 +59,7 @@ Restrict port 8006 to your own IP or a VPN.
 - Network: `dhcp` only works if the provider offers DHCP. Otherwise use `static`. If the network is wrong, the server is only reachable through the VNC console of the provider.
 - IPv6 and extra IPs are not part of the installer. Configure them in `/etc/network/interfaces` afterwards.
 - Not tested on a real server yet.
+
+## SSH keys
+
+The ISO installs the keys from `config/authorized_keys` (public keys only) and from `github.com/<owner>.keys`. If neither contains a key, the build aborts, because the server would be unreachable.
