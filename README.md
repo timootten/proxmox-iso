@@ -8,7 +8,8 @@ Builds an unattended Proxmox VE installation ISO with GitHub Actions and publish
 2. When the run is green, the **Summary** shows the full download URL of exactly that build, for example
    `https://github.com/timootten/proxmox-iso/releases/download/iso-9.3-1-ff36288a/proxmox-ve-auto.iso`
    The tag ends with the first 8 characters of the ISO's SHA-256, so a URL always points to one single file. Paste it into the ISO import of your hosting panel. Panels that ask for a file name get `proxmox-ve-auto.iso`.
-3. Boot the server from the ISO. The installation runs without questions and reboots.
+3. Boot the server from the ISO. The installation runs without questions and then **powers the server off** (not a reboot, because the ISO is still mounted and would start the installation again).
+   Unmount the ISO in the panel, then start the server. The first start runs the setup script.
 4. `ssh root@<ip>`, then `passwd` (needed for the web interface on port 8006).
 
 Set your SSH key once in `config/authorized_keys`. The repository is **public** so that the download URL works without a login. There are no secrets in it or in the ISO: only your public SSH key, the hostname and the addresses (which are in DNS anyway) and the hash of a random root password that is stored nowhere. Never put passwords or tokens into `config/`.

@@ -258,7 +258,7 @@ mailto = "$MAILTO"
 timezone = "$TIMEZONE"
 root-password-hashed = "$ROOT_HASH"
 root-ssh-keys = $KEYS_JSON
-reboot-mode = "reboot"
+reboot-mode = "power-off"
 
 $NETWORK_BLOCK
 
