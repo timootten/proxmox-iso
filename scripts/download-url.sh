@@ -26,8 +26,8 @@ URL=$(curl -sI \
 
 # Asks for the first byte. Retries a few times: right after an upload the blob can answer with an error once.
 probe() {
-    local code="" i
-    for i in 1 2 3 4 5; do
+    local code=""
+    for _ in 1 2 3 4 5; do
         code=$(curl -s -o /dev/null -w '%{http_code}' -r 0-0 -m 30 "$1" || true)
         if [ "$code" = "200" ] || [ "$code" = "206" ]; then break; fi
         sleep 3
