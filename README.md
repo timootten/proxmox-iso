@@ -17,7 +17,7 @@ Set your SSH key once in `config/authorized_keys`. The repository stays private 
 | Field | Meaning |
 |---|---|
 | Server type | `vps` (one virtual disk, ext4 + LVM, one global storage) or `baremetal` (ZFS) |
-| Hostname | FQDN, for example `pve.example.com` |
+| Hostname | FQDN, default `hydrogen.timootten.com` |
 | IPv4 address, gateway | For example `192.0.2.10/24` and `192.0.2.1`. Empty for an IPv6-only server |
 | IPv6 address, gateway | For example `2001:db8::10/64`. Empty for an IPv4-only server |
 | Disks, ZFS layout | Bare metal only, for example `nvme0n1 nvme1n1` with `raid1`. `vps` uses `sda` |
@@ -27,17 +27,14 @@ Set your SSH key once in `config/authorized_keys`. The repository stays private 
 
 The network is **always static**, DHCP is not supported. At least one of IPv4 or IPv6 is required. Empty fields fall back to `config/server.env`, which also holds everything that is not in the form.
 
-## What the pipeline does
+## Workflows
 
 | Job | Purpose |
 |---|---|
-| `lint` | shellcheck for all scripts |
-| `plan` | Weekly run: only builds when Proxmox published a newer ISO than the last release. Automatic builds (push, weekly) are skipped while `config/server.env` has no IP address |
-| `build` | Builds the ISO and checks every input before (disk count against RAID level, addresses, names of templates) |
-| `release` | Publishes release `iso-<version>-<run>`, keeps the five newest, writes the download URL into the summary |
-| `alert` | Opens an issue when the weekly run fails |
-
-`Template sources` runs every Wednesday and opens an issue when a cloud image URL of a template is gone.
+| `Build Proxmox ISO` | **Only runs when you start it by hand.** Builds the ISO and checks every input first (disk count against RAID level, addresses, names of templates), publishes release `iso-<version>-<run>`, keeps the five newest and writes the download URL into the summary |
+| `Lint` | shellcheck for all scripts, on every push and pull request |
+| `Proxmox update check` | Weekly: opens an issue when Proxmox published a newer ISO than the last release. Builds nothing |
+| `Template sources` | Wednesday: opens an issue when a cloud image URL of a template is gone |
 
 `Test installation (manual)` installs a test ISO in QEMU and checks the system over SSH (about 12 minutes). It only runs when you start it, for example before a bigger change.
 

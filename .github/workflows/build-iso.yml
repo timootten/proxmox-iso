@@ -1,5 +1,7 @@
 name: Build Proxmox ISO
 
+# Only runs when you start it by hand ("Run workflow"). Nothing builds automatically.
+
 on:
   workflow_dispatch:
     inputs:
@@ -9,8 +11,8 @@ on:
         options: [vps, baremetal]
         default: 'vps'
       fqdn:
-        description: 'Hostname with domain, for example pve.example.com (empty = config/server.env)'
-        default: ''
+        description: 'Hostname with domain'
+        default: 'hydrogen.timootten.com'
       ip_cidr:
         description: 'IPv4 address with prefix, for example 192.0.2.10/24. Leave empty for an IPv6-only server'
         default: ''
@@ -42,60 +44,16 @@ on:
         type: choice
         options: [minimal, none, standard, all]
         default: 'minimal'
-  push:
-    branches: [main]
-    paths: ['scripts/**', 'config/**', 'templates/**', '.github/workflows/build-iso.yml']
-  pull_request:
-    paths: ['scripts/**', 'config/**', 'templates/**', '.github/workflows/build-iso.yml']
-  schedule:
-    - cron: '0 4 * * 1'
 
 permissions:
   contents: read
 
 concurrency:
-  group: build-iso-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: build-iso
+  cancel-in-progress: false
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: shellcheck
-        run: |
-          shellcheck scripts/*.sh
-          shellcheck --severity=error templates/generate-template.sh templates/motd.sh
-
-  plan:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      needed: ${{ steps.plan.outputs.needed }}
-    env:
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - id: plan
-        name: Is a new build needed?
-        run: |
-          needed=true
-          if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ] && ! grep -qE '^(IP_CIDR|IPV6_CIDR)=.+' config/server.env; then
-            echo "::notice::config/server.env has no IP_CIDR or IPV6_CIDR. Automatic builds are skipped, start a manual run."
-            needed=false
-          fi
-          if [ "$needed" = "true" ] && [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
-            latest=$(curl -fsSL https://download.proxmox.com/iso/ | grep -oE 'proxmox-ve_[0-9]+\.[0-9]+-[0-9]+\.iso' | sort -uV | tail -1)
-            current=$(gh release view --repo "$GITHUB_REPOSITORY" --json body -q .body 2>/dev/null | grep -oE 'proxmox-ve_[0-9]+\.[0-9]+-[0-9]+\.iso' | head -1 || true)
-            echo "Proxmox latest: $latest, in our latest release: ${current:-none}"
-            [ "$latest" = "$current" ] && needed=false
-          fi
-          echo "needed=$needed" >> "$GITHUB_OUTPUT"
-
   build:
-    needs: [lint, plan]
-    if: needs.plan.outputs.needed == 'true' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -127,8 +85,7 @@ jobs:
           retention-days: 1
 
   release:
-    needs: [plan, build]
-    if: needs.plan.outputs.needed == 'true'
+    needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -186,18 +143,3 @@ jobs:
             echo
             echo "A new URL at any time: \`./scripts/download-url.sh\`"
           } >> "$GITHUB_STEP_SUMMARY"
-
-  alert:
-    needs: [lint, plan, build, release]
-    if: failure() && github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      issues: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - run: |
-          gh issue create --repo "$GITHUB_REPOSITORY" \
-            --title "Scheduled ISO build failed ($(date -u +%F))" \
-            --body "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

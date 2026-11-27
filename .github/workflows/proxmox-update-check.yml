@@ -1,0 +1,34 @@
+name: Proxmox update check
+
+# Weekly: opens an issue when Proxmox published a newer ISO than the one in our latest release.
+# Nothing is built, you start "Build Proxmox ISO" yourself.
+
+on:
+  schedule:
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Compare with the latest release
+        run: |
+          latest=$(curl -fsSL https://download.proxmox.com/iso/ | grep -oE 'proxmox-ve_[0-9]+\.[0-9]+-[0-9]+\.iso' | sort -uV | tail -1)
+          current=$(gh release view --repo "$GITHUB_REPOSITORY" --json body -q .body 2>/dev/null | grep -oE 'proxmox-ve_[0-9]+\.[0-9]+-[0-9]+\.iso' | head -1 || true)
+          echo "Proxmox latest: $latest, in our latest release: ${current:-none}"
+          [ -n "$current" ] && [ "$latest" != "$current" ] || exit 0
+          title="New Proxmox VE ISO: $latest"
+          if [ -z "$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "$title in:title" --json number --jq '.[0].number')" ]; then
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" \
+              --body "Proxmox published $latest, the latest release here was built from $current. Run the workflow \"Build Proxmox ISO\" to get a new ISO."
+          fi

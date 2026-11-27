@@ -101,7 +101,7 @@ check "static IPv4 on vmbr0" 'ip -4 addr show vmbr0 | grep -q "10.0.2.15/24"'
 check "static IPv6 on vmbr0" 'ip -6 addr show vmbr0 | grep -q "fec0::10/64"'
 check "private network vmbr1 is up" 'ip -4 addr show vmbr1 | grep -q "10.10.0.1/24"'
 check "NAT rule for vmbr1" 'iptables -t nat -S POSTROUTING | grep -q "10.10.0.0/24.*MASQUERADE"'
-check "dnsmasq runs and DNS is bound to vmbr1 only" 'systemctl is-active --quiet dnsmasq && ! ss -lunH | awk "{print \$4}" | grep -E ":53$" | grep -vE "^(10\.10\.0\.1|127\.0\.0\.1|\[::1\]):53$" | grep -q .'
+check "dnsmasq runs and DNS is bound to vmbr1 only" 'systemctl is-active --quiet dnsmasq && ! ss -lunH | awk "{print \$4}" | grep -E ":53$" | grep -vE "%vmbr1:53$|^(10\.10\.0\.1|127\.0\.0\.1|\[::1\]):53$" | grep -q .'
 check "unattended security updates enabled" 'grep -q "Unattended-Upgrade \"1\"" /etc/apt/apt.conf.d/20auto-upgrades'
 if [ "$TARGET" = "vps" ]; then
     check "one global storage (local, no local-lvm)" 'pvesm status | awk "NR>1 {print \$1}" | grep -qx local && ! pvesm status | grep -q local-lvm'
