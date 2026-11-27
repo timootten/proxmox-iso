@@ -52,7 +52,7 @@ Renovate (`renovate.json`) pins GitHub Actions to commit hashes and opens update
 ## Network
 
 - **vmbr0**: the public uplink with the host address (IPv4 and/or IPv6).
-- **vmbr1**: private network for VMs (`10.10.0.1/24` by default). Source NAT through vmbr0 lets the VMs reach the internet, `dnsmasq` hands out addresses (`.100` to `.200`) and DNS on this bridge only. NAT is off on IPv6-only servers.
+- **vmbr1**: private network for VMs with IPv4 (`10.10.0.1/24`) and IPv6 (`fd10:10::1/64`, a private unique local range). Source NAT (and NAT66) through vmbr0 lets the VMs reach the internet. `dnsmasq` answers on this bridge only: DHCP (`.100` to `.200`), router advertisements for IPv6 and DNS, and it forwards to all four resolvers. IPv4 NAT is off on IPv6-only servers.
 - **IPv6**: the installer takes one address, IPv4 if there is one. The IPv6 address is added on the first boot. With a gateway outside of the prefix (routed /64) the default route is set with `onlink`.
 - **DNS**: `1.1.1.1`, `8.8.8.8`, Cloudflare IPv6, Google IPv6. Linux uses at most three, so the fourth is only a note. On IPv6-only servers the IPv6 resolvers come first.
 - **Static routes**: `config/static-routes.conf`, one `ip route` line each (`-6 ` prefix for IPv6). It becomes `/etc/proxmox-static-routes.conf`, applied at every boot by `static-routes.service`. Change it later, then `systemctl restart static-routes`.
@@ -84,7 +84,14 @@ The generator is in `templates/` (`generate-template.sh`, `global.conf`, `motd.s
 
 `TEMPLATES` in `config/server.env` adds single names, for example `fedora-45 rocky-9`. Available: `debian-12`, `debian-13`, `ubuntu-22.04`, `ubuntu-24.04`, `ubuntu-26.04`, `fedora-45`, `rocky-9`, `almalinux-9`, `archlinux`, `customs/debian-13-docker`.
 
-Templates use qcow2 on directory storage (`vps`) or ZFS volumes (`baremetal`), bridge `vmbr0`, DHCP as cloud-init default. Clone with `qm clone <id> <new-id> --full` and set `--net0 virtio,bridge=vmbr1` for the private network.
+Templates use qcow2 on directory storage (`vps`) or ZFS volumes (`baremetal`). They sit on the private bridge `vmbr1` (IPv4 by DHCP, IPv6 by router advertisement) and carry your SSH key, so a clone can be started and used right away:
+
+```bash
+qm clone 9013 100 --name test     # linked clone, ready in seconds
+qm start 100
+```
+
+Full independent copy: add `--full`. The VM gets `10.10.0.x` and an `fd10:10::` address, `ssh root@<address>` from the host works with your key.
 
 **Auto update:** with `TEMPLATE_AUTO_REFRESH=true` a monthly timer rebuilds the templates from the current cloud images. Templates with linked clones are kept, so use full clones. The list is in `/etc/default/template-refresh`, run it by hand with `/usr/local/sbin/refresh-templates`. The MOTD banner (Andotta) is `templates/motd.sh`.
 

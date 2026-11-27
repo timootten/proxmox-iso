@@ -590,6 +590,11 @@ configure_vm() {
     
     # Set cloud-init user and enable root login
     qm set "$VM_ID" --ciuser "$CLOUD_INIT_USER"
+
+    # SSH keys (SSH_KEYS_FILE): clones inherit them, so they can be started and used right away
+    if [ -n "${SSH_KEYS_FILE:-}" ] && [ -s "$SSH_KEYS_FILE" ]; then
+        qm set "$VM_ID" --sshkeys "$SSH_KEYS_FILE"
+    fi
     
     # Set keyboard layout for noVNC console
     qm set "$VM_ID" --keyboard "$KEYBOARD_LAYOUT"

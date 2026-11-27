@@ -31,6 +31,17 @@ else
 fi
 
 echo -e "${GREEN}Welcome to $OS_NAME${NC}"
+if [ -d /etc/pve ]; then
+    if [ -f /var/lib/first-boot-custom.status ]; then
+        FB=$(cat /var/lib/first-boot-custom.status)
+        case "$FB" in
+            OK*) echo -e "${GREEN}Setup: OK${NC}" ;;
+            *)   echo -e "${RED}Setup: $FB (see /var/log/first-boot-custom.log)${NC}" ;;
+        esac
+    else
+        echo -e "${YELLOW}Setup: first boot script has not finished (see /var/log/first-boot-custom.log)${NC}"
+    fi
+fi
 if command -v pveversion >/dev/null 2>&1; then
     echo -e "${GREEN}$(pveversion 2>/dev/null | head -n1)  |  kernel $(uname -r)${NC}"
 fi

@@ -109,6 +109,9 @@ check "tools installed" 'for c in curl wget fastfetch iperf3 btop htop; do comma
 check "no pending upgrades" '[ "$(apt-get update -qq >/dev/null 2>&1; apt-get -s dist-upgrade | grep -c "^Inst ")" = 0 ]'
 check "login banner installed" '[ -x /usr/local/bin/dynamic-motd ] && /usr/local/bin/dynamic-motd | grep -q "Welcome to" && [ -f /etc/profile.d/99-andotta-motd.sh ]'
 check "custom prompt for root" 'bash -ic "echo \$PS1" 2>/dev/null | grep -q "38;5;1m"'
+check "private IPv6 on vmbr1" 'ip -6 addr show vmbr1 | grep -q "fd10:10::1/64"'
+check "NAT66 rule for vmbr1" 'ip6tables -t nat -S POSTROUTING | grep -q "fd10:10::/64.*MASQUERADE"'
+check "router advertisements and all four resolvers in dnsmasq" 'grep -q "^enable-ra" /etc/dnsmasq.d/vmbr1.conf && [ "$(grep -c "^server=" /etc/dnsmasq.d/vmbr1.conf)" = 4 ]'
 check "unattended security updates enabled" 'grep -q "Unattended-Upgrade \"1\"" /etc/apt/apt.conf.d/20auto-upgrades'
 if [ "$TARGET" = "vps" ]; then
     check "one global storage (local, no local-lvm)" 'pvesm status | awk "NR>1 {print \$1}" | grep -qx local && ! pvesm status | grep -q local-lvm'

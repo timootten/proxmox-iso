@@ -115,7 +115,8 @@ APT::Periodic::AutocleanInterval "7";
 APTC
     cat > /etc/apt/apt.conf.d/52host-unattended <<'APTC'
 Unattended-Upgrade::Automatic-Reboot "false";
-Unattended-Upgrade::Remove-Unused-Kernel-Packages "false";
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
 APTC
 }
 
@@ -124,24 +125,36 @@ APTC
 system_upgrade() {
     export DEBIAN_FRONTEND=noninteractive
     apt-get update || return 1
+    # The recommended Proxmox kernel (meta package) is the only kernel that stays
+    apt-get -y install proxmox-default-kernel || return 1
     apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold dist-upgrade || return 1
 
-    if [ "$KERNEL" = "latest" ]; then
-        # Newest opt-in kernel (the default kernel of Proxmox follows its own meta package)
-        local newest
-        newest=$(apt-cache search --names-only '^proxmox-kernel-[0-9]+\.[0-9]+$' | awk '{print $1}' | sort -V | tail -1)
-        if [ -n "$newest" ]; then
-            apt-get -y install "$newest" || return 1
-        fi
-    fi
-
-    # Old kernels stay installed as a fallback. A reboot is needed when a newer one than the running kernel exists.
     local running installed
     running=$(uname -r)
     installed=$(find /boot -maxdepth 1 -name 'vmlinuz-*' | sed 's|.*/vmlinuz-||' | sort -V | tail -1)
     if [ -n "$installed" ] && [ "$installed" != "$running" ]; then
+        # The running kernel cannot be removed. A one-time service removes all other kernels after the reboot.
         echo "kernel $installed is installed, running $running"
         NEED_REBOOT=true
+        cat > /etc/systemd/system/kernel-cleanup.service <<'UNIT'
+[Unit]
+Description=Remove old kernels after the first boot into the new kernel
+After=multi-user.target
+ConditionPathExists=/var/lib/kernel-cleanup.pending
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/apt-get -y autoremove --purge
+ExecStartPost=/bin/rm -f /var/lib/kernel-cleanup.pending
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+        touch /var/lib/kernel-cleanup.pending
+        systemctl daemon-reload
+        systemctl enable kernel-cleanup.service
+    else
+        apt-get -y autoremove --purge || true
     fi
 }
 
@@ -290,6 +303,8 @@ host_firewall() {
             echo "IN ACCEPT -iface vmbr1 -p udp -dport 67"
             echo "IN ACCEPT -iface vmbr1 -p udp -dport 53"
             echo "IN ACCEPT -iface vmbr1 -p tcp -dport 53"
+            echo "IN ACCEPT -iface vmbr1 -p ipv6-icmp"
+            echo "IN ACCEPT -iface vmbr1 -p udp -dport 547"
         fi
     } > /etc/pve/firewall/cluster.fw
     systemctl enable --now pve-firewall
@@ -333,36 +348,52 @@ private_net() {
             echo "    post-up /usr/local/sbin/vmbr1-nat up"
             echo "    post-down /usr/local/sbin/vmbr1-nat down"
         fi
+        if [ "$PRIVATE_NET_IPV6_CIDR" != "none" ]; then
+            echo
+            echo "iface vmbr1 inet6 static"
+            echo "    address $PRIVATE_NET_IPV6_CIDR"
+        fi
     } > /etc/network/interfaces.d/20-vmbr1.cfg
 
-    if [ "$PRIVATE_NET_NAT" = "true" ]; then
-        cat > /usr/local/sbin/vmbr1-nat <<NAT
-#!/bin/bash
-# Source NAT for the private network (VMs on vmbr1 reach the internet through vmbr0)
-RULE="POSTROUTING -s $PRIVATE_NET_NETWORK -o vmbr0 -j MASQUERADE"
-case "\$1" in
-    up)   iptables -t nat -C \$RULE 2>/dev/null || iptables -t nat -A \$RULE ;;
-    down) iptables -t nat -D \$RULE 2>/dev/null || true ;;
-esac
-NAT
-        chmod 755 /usr/local/sbin/vmbr1-nat
+    # Source NAT for the private networks: VMs on vmbr1 reach the internet through vmbr0.
+    # IPv4 NAT needs an IPv4 uplink, NAT66 for the private IPv6 network needs an IPv6 uplink.
+    # shellcheck disable=SC2016  # $1 belongs to the generated script
+    printf '#!/bin/bash\ncase "$1" in up|down) ;; *) exit 1 ;; esac\n' > /usr/local/sbin/vmbr1-nat
+    if [ "$PRIVATE_NET_NAT" = "true" ] && [ -n "$IP_CIDR" ]; then
+        cat >> /usr/local/sbin/vmbr1-nat <<NAT4
+R="POSTROUTING -s $PRIVATE_NET_NETWORK -o vmbr0 -j MASQUERADE"
+if [ "\$1" = up ]; then iptables -t nat -C \$R 2>/dev/null || iptables -t nat -A \$R; else iptables -t nat -D \$R 2>/dev/null || true; fi
+NAT4
     fi
+    if [ "$PRIVATE_NET_NAT" = "true" ] && [ "$PRIVATE_NET_IPV6_CIDR" != "none" ] && [ -n "$IPV6_CIDR" ]; then
+        cat >> /usr/local/sbin/vmbr1-nat <<NAT6
+R="POSTROUTING -s $PRIVATE_NET_IPV6_NETWORK -o vmbr0 -j MASQUERADE"
+if [ "\$1" = up ]; then ip6tables -t nat -C \$R 2>/dev/null || ip6tables -t nat -A \$R; else ip6tables -t nat -D \$R 2>/dev/null || true; fi
+NAT6
+    fi
+    echo "exit 0" >> /usr/local/sbin/vmbr1-nat
+    chmod 755 /usr/local/sbin/vmbr1-nat
 }
 
 private_dhcp() {
-    # dnsmasq answers DHCP and DNS on vmbr1 only. The config is written before the package is installed,
-    # so it never listens on the public interface.
+    # dnsmasq answers DHCP, router advertisements (IPv6) and DNS on vmbr1 only. The config is written before the
+    # package is installed, so it never listens on the public interface.
     mkdir -p /etc/dnsmasq.d /etc/systemd/system/dnsmasq.service.d
-    cat > /etc/dnsmasq.d/vmbr1.conf <<DNSMASQ
-interface=vmbr1
-bind-dynamic
-dhcp-range=$PRIVATE_NET_DHCP_START,$PRIVATE_NET_DHCP_END,$PRIVATE_NET_MASK,12h
-dhcp-option=option:router,$PRIVATE_NET_ADDRESS
-dhcp-option=option:dns-server,$PRIVATE_NET_ADDRESS
-no-resolv
-server=1.1.1.1
-server=8.8.8.8
-DNSMASQ
+    {
+        echo "interface=vmbr1"
+        echo "bind-dynamic"
+        echo "dhcp-range=$PRIVATE_NET_DHCP_START,$PRIVATE_NET_DHCP_END,$PRIVATE_NET_MASK,12h"
+        echo "dhcp-option=option:router,$PRIVATE_NET_ADDRESS"
+        echo "dhcp-option=option:dns-server,$PRIVATE_NET_ADDRESS"
+        if [ "$PRIVATE_NET_IPV6_CIDR" != "none" ]; then
+            echo "enable-ra"
+            echo "dhcp-range=::,constructor:vmbr1,ra-only,64,12h"
+            echo "dhcp-option=option6:dns-server,[$PRIVATE_NET_IPV6_ADDRESS]"
+        fi
+        echo "no-resolv"
+        local d
+        for d in $DNS_SERVERS; do echo "server=$d"; done
+    } > /etc/dnsmasq.d/vmbr1.conf
     cat > /etc/systemd/system/dnsmasq.service.d/override.conf <<'UNIT'
 [Unit]
 After=network-online.target
@@ -434,10 +465,13 @@ vm_templates() {
     mkdir -p /opt/template-generator
     echo "$TEMPLATES_B64" | base64 -d | tar -xzf - -C /opt/template-generator || return 1
     cd /opt/template-generator || return 1
+    echo "$AUTHORIZED_KEYS_B64" | base64 -d > /etc/template-sshkeys.pub
+    chmod 600 /etc/template-sshkeys.pub
     local t rc=0
     for t in $TEMPLATES; do
         echo "--- template $t"
-        DEFAULT_STORAGE=$storage DEFAULT_BRIDGE=vmbr0 TEMPLATE_IPCONFIG=ip=dhcp \
+        DEFAULT_STORAGE=$storage DEFAULT_BRIDGE="$TEMPLATE_BRIDGE" TEMPLATE_IPCONFIG="ip=dhcp,ip6=auto" \
+            SSH_KEYS_FILE=/etc/template-sshkeys.pub \
             BRAND_DOCS_URL="$BRAND_DOCS_URL" BRAND_SUPPORT_URL="$BRAND_SUPPORT_URL" \
             bash generate-template.sh "$t" </dev/null || { echo "template $t failed"; rc=1; }
     done
@@ -449,8 +483,9 @@ template_refresh() {
     [ "$TARGET" = "baremetal" ] && storage=local-zfs
     cat > /etc/default/template-refresh <<ENVF
 DEFAULT_STORAGE="$storage"
-DEFAULT_BRIDGE="vmbr0"
-TEMPLATE_IPCONFIG="ip=dhcp"
+DEFAULT_BRIDGE="$TEMPLATE_BRIDGE"
+TEMPLATE_IPCONFIG="ip=dhcp,ip6=auto"
+SSH_KEYS_FILE="/etc/template-sshkeys.pub"
 BRAND_DOCS_URL="$BRAND_DOCS_URL"
 BRAND_SUPPORT_URL="$BRAND_SUPPORT_URL"
 TEMPLATES="$TEMPLATES"
@@ -461,7 +496,7 @@ ENVF
 # Templates that still have linked clones are kept: Proxmox refuses to destroy them.
 set -u
 . /etc/default/template-refresh
-export DEFAULT_STORAGE DEFAULT_BRIDGE TEMPLATE_IPCONFIG BRAND_DOCS_URL BRAND_SUPPORT_URL ASSUME_YES=1 REFRESH_IMAGE=1
+export DEFAULT_STORAGE DEFAULT_BRIDGE TEMPLATE_IPCONFIG SSH_KEYS_FILE BRAND_DOCS_URL BRAND_SUPPORT_URL ASSUME_YES=1 REFRESH_IMAGE=1
 cd /opt/template-generator || exit 1
 rc=0
 for t in $TEMPLATES; do
@@ -544,7 +579,7 @@ else
     echo "=== first boot finished with errors: ${FAILED[*]} ==="
 fi
 
-# A new kernel only runs after a reboot. Previous kernels stay installed as a fallback.
+# A new kernel only runs after a reboot. The old kernels are removed after that reboot.
 if [ "$NEED_REBOOT" = "true" ] && [ "$REBOOT_AFTER_UPGRADE" = "true" ]; then
     echo "rebooting in one minute to run the new kernel"
     shutdown -r +1 "First boot setup finished, rebooting into the new kernel"
