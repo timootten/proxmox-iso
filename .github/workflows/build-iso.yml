@@ -58,6 +58,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write
+      issues: write
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -110,23 +111,39 @@ jobs:
             | grep '^iso-' | tail -n +6 \
             | xargs -r -I{} gh release delete {} --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
 
-          URL=$(NO_VERIFY=1 ./scripts/download-url.sh "$GITHUB_REPOSITORY" "$TAG") || URL=""
-          echo "Download URL: $URL"
+          # GitHub Actions masks the "jwt" part of the download URL in logs and summaries. An issue is not
+          # masked, so the fresh URL is written into the body of one living issue.
+          URL=$(./scripts/download-url.sh "$GITHUB_REPOSITORY" "$TAG") || URL=""
+          EXPIRES=$(echo "$URL" | sed -nE 's/.*[?&]se=([^&]*).*/\1/p' | sed 's/%3A/:/g')
+          TITLE="ISO download link"
+          if [ -n "$URL" ]; then
+            cat > issue.md <<ISSUE
+          Latest build: **$TAG** ($TARGET, $FQDN)
+
+          Direct download URL, valid until **$EXPIRES** (UTC). Paste it into the ISO import of your hosting panel:
+
+          \`\`\`
+          $URL
+          \`\`\`
+
+          SHA-256: \`$(cut -d' ' -f1 out/proxmox-ve-auto.iso.sha256)\`
+
+          A new URL at any time: \`./scripts/download-url.sh\` or run the workflow again.
+          ISSUE
+          else
+            printf 'The ISO %s is published, but no download URL could be created. Run `./scripts/download-url.sh` on your computer.\n' "$TAG" > issue.md
+          fi
+          ISSUE_NR=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number')
+          if [ -z "$ISSUE_NR" ]; then
+            ISSUE_URL=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body-file issue.md)
+          else
+            gh issue edit "$ISSUE_NR" --repo "$GITHUB_REPOSITORY" --body-file issue.md >/dev/null
+            ISSUE_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/issues/$ISSUE_NR"
+          fi
           {
             echo "## ISO ready: $TAG"
             echo
-            if [ -n "$URL" ]; then
-              echo "Direct download URL (valid for about one hour). Paste it into the ISO import of your hosting panel."
-              echo "If the import reports the file as unavailable, wait one or two minutes: GitHub needs a moment after the upload."
-              echo
-              echo '```'
-              echo "$URL"
-              echo '```'
-            else
-              echo "The ISO is published, but no download URL could be created. Run \`./scripts/download-url.sh\` on your computer."
-            fi
+            echo "The download URL is in this issue (GitHub hides it in run summaries): $ISSUE_URL"
             echo
             echo "SHA-256: \`$(cut -d' ' -f1 out/proxmox-ve-auto.iso.sha256)\`"
-            echo
-            echo "A new URL at any time: \`./scripts/download-url.sh\`"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -39,14 +39,10 @@ probe() {
 }
 ok() { [ "$1" = "200" ] || [ "$1" = "206" ]; }
 
-# Without the "jwt" parameter: the signature alone is enough, and GitHub Actions masks jwt as "***" in logs.
-CLEAN=$(echo "$URL" | sed -E 's/([?&])jwt=[^&]*&?/\1/; s/[?&]$//')
-# NO_VERIFY=1 skips the check. The workflow uses it: GitHub's storage answers with status 618 for a while
-# after an upload, but the same URL works a few minutes later.
+# Keep the "jwt" parameter: without it GitHub's CDN answers "618 jwt-not-provided" for files it has not cached yet.
+# (GitHub Actions masks it as "***" in logs and summaries, so the workflow posts the URL to an issue instead.)
 if [ "${NO_VERIFY:-}" != "1" ]; then
-    CODE=$(probe "$CLEAN")
-    if ! ok "$CODE"; then
-        echo "WARNING: could not verify the download URL (last answer: $CODE). It is printed anyway." >&2
-    fi
+    CODE=$(probe "$URL")
+    ok "$CODE" || echo "WARNING: could not verify the download URL (last answer: $CODE). It is printed anyway." >&2
 fi
-echo "$CLEAN"
+echo "$URL"
