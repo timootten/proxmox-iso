@@ -1,7 +1,8 @@
 #!/bin/bash
 # Prints a short-lived direct download URL (valid about one hour) of the ISO of a release.
 # Needed because the repository is private: the normal release URL requires a login.
-# Paste the URL into the ISO import of your hosting panel right away.
+# Paste the URL into the ISO import of your hosting panel right away. If the panel wants a file name that ends
+# in ".iso" (ZAP-Hosting), type proxmox-ve-auto.iso into its "file name" field.
 #   ./scripts/download-url.sh [owner/repo] [tag]     (default: current repo, latest release)
 set -euo pipefail
 
@@ -45,6 +46,4 @@ if [ "${NO_VERIFY:-}" != "1" ]; then
     CODE=$(probe "$URL")
     ok "$CODE" || echo "WARNING: could not verify the download URL (last answer: $CODE). It is printed anyway." >&2
 fi
-
-# Some panels (ZAP-Hosting) only accept URLs that end in ".iso". The storage ignores unknown parameters.
-echo "${URL}&filename=proxmox-ve-auto.iso"
+echo "$URL"

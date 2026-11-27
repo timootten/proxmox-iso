@@ -120,7 +120,8 @@ jobs:
             cat > issue.md <<ISSUE
           Latest build: **$TAG** ($TARGET, $FQDN)
 
-          Direct download URL, valid until **$EXPIRES** (UTC). Paste it into the ISO import of your hosting panel:
+          Direct download URL, valid until **$EXPIRES** (UTC). Paste it into the ISO import of your hosting panel.
+          Type **proxmox-ve-auto.iso** into the field "file name" (ZAP-Hosting requires a name ending in .iso):
 
           \`\`\`
           $URL
