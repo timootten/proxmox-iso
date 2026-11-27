@@ -5,12 +5,13 @@ Builds an unattended Proxmox VE installation ISO with GitHub Actions and publish
 ## Quick start
 
 1. Actions, `Build Proxmox ISO`, `Run workflow`. Fill in the form: server type, hostname, IPv4 and/or IPv6 with gateway, disks for bare metal.
-2. When the run is green, open its **Summary**. It shows a direct download URL of the ISO, valid for about one hour. Paste it into the ISO import of your hosting panel.
-   Later: `./scripts/download-url.sh` prints a fresh URL for the latest release (`./scripts/download-url.sh owner/repo iso-9.3-1-12` for a specific one).
+2. When the run is green, the **Summary** shows the download URL. It is always the same and ends in `.iso`:
+   `https://github.com/timootten/proxmox-iso/releases/latest/download/proxmox-ve-auto.iso`
+   Paste it into the ISO import of your hosting panel. Panels that ask for a file name get `proxmox-ve-auto.iso`.
 3. Boot the server from the ISO. The installation runs without questions and reboots.
 4. `ssh root@<ip>`, then `passwd` (needed for the web interface on port 8006).
 
-Set your SSH key once in `config/authorized_keys`. The repository stays private on purpose: the ISO contains hostname, addresses and routes.
+Set your SSH key once in `config/authorized_keys`. The repository is **public** so that the download URL works without a login. There are no secrets in it or in the ISO: only your public SSH key, the hostname and the addresses (which are in DNS anyway) and the hash of a random root password that is stored nowhere. Never put passwords or tokens into `config/`.
 
 ## The form
 
