@@ -110,12 +110,14 @@ jobs:
             | grep '^iso-' | tail -n +6 \
             | xargs -r -I{} gh release delete {} --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
 
-          URL=$(./scripts/download-url.sh "$GITHUB_REPOSITORY" "$TAG") || URL=""
+          URL=$(NO_VERIFY=1 ./scripts/download-url.sh "$GITHUB_REPOSITORY" "$TAG") || URL=""
+          echo "Download URL: $URL"
           {
             echo "## ISO ready: $TAG"
             echo
             if [ -n "$URL" ]; then
-              echo "Direct download URL (valid for about one hour). Paste it into the ISO import of your hosting panel:"
+              echo "Direct download URL (valid for about one hour). Paste it into the ISO import of your hosting panel."
+              echo "If the import reports the file as unavailable, wait one or two minutes: GitHub needs a moment after the upload."
               echo
               echo '```'
               echo "$URL"

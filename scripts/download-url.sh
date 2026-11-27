@@ -24,16 +24,16 @@ URL=$(curl -sI \
     | awk 'tolower($1)=="location:" {print $2}' | tr -d '\r')
 [ -n "$URL" ] || { echo "GitHub did not return a download location" >&2; exit 1; }
 
-# Asks for the first byte and returns the HTTP status. Retries for up to a minute, because right after an
+# Asks for the first byte and returns the HTTP status. Retries for a few seconds, because right after an
 # upload the storage can answer with an error. Details of every failed attempt go to stderr.
 probe() {
     local out="" code=""
-    for _ in 1 2 3 4 5 6; do
+    for _ in 1 2 3; do
         out=$(curl -s -o /dev/null -w '%{http_code} exit=%{exitcode} %{errormsg}' -r 0-0 -m 30 "$1" || true)
         code=${out%% *}
         if [ "$code" = "200" ] || [ "$code" = "206" ]; then break; fi
         echo "  attempt failed: $out" >&2
-        sleep 10
+        sleep 5
     done
     echo "$code"
 }
@@ -41,8 +41,12 @@ ok() { [ "$1" = "200" ] || [ "$1" = "206" ]; }
 
 # Without the "jwt" parameter: the signature alone is enough, and GitHub Actions masks jwt as "***" in logs.
 CLEAN=$(echo "$URL" | sed -E 's/([?&])jwt=[^&]*&?/\1/; s/[?&]$//')
-CODE=$(probe "$CLEAN")
-if ! ok "$CODE"; then
-    echo "WARNING: could not verify the download URL (last answer: $CODE). It is printed anyway." >&2
+# NO_VERIFY=1 skips the check. The workflow uses it: GitHub's storage answers with status 618 for a while
+# after an upload, but the same URL works a few minutes later.
+if [ "${NO_VERIFY:-}" != "1" ]; then
+    CODE=$(probe "$CLEAN")
+    if ! ok "$CODE"; then
+        echo "WARNING: could not verify the download URL (last answer: $CODE). It is printed anyway." >&2
+    fi
 fi
 echo "$CLEAN"
