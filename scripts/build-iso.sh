@@ -38,6 +38,7 @@ DISK_LIST="${DISK_LIST:-sda}"
 ZFS_RAID="${ZFS_RAID:-raid1}"
 ZFS_ARC_MAX_GIB="${ZFS_ARC_MAX_GIB:-}"
 SWAP_GIB="${SWAP_GIB:-4}"
+ROOT_INSTALL_GIB="${ROOT_INSTALL_GIB:-20}"
 IPV6_CIDR="${IPV6_CIDR:-}"
 IPV6_GATEWAY="${IPV6_GATEWAY:-}"
 IPV6_GATEWAY_ONLINK="${IPV6_GATEWAY_ONLINK:-true}"
@@ -78,6 +79,7 @@ case "$IP_FORWARDING" in auto|true|false) ;; *) die "IP_FORWARDING must be auto,
 [[ "$FQDN" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$ ]] \
     || die "FQDN needs a hostname and a domain, got '$FQDN'"
 [[ "$SWAP_GIB" =~ ^[0-9]+$ ]] || die "SWAP_GIB must be a number"
+[[ "$ROOT_INSTALL_GIB" =~ ^[0-9]+$ && "$ROOT_INSTALL_GIB" -ge 8 ]] || die "ROOT_INSTALL_GIB must be a number of at least 8"
 [[ "$KEYBOARD" =~ ^[a-z-]+$ && "$COUNTRY" =~ ^[a-z]{2}$ ]] || die "invalid KEYBOARD or COUNTRY"
 [[ "$PVE_ISO" == "latest" || "$PVE_ISO" =~ ^proxmox-ve_[0-9]+\.[0-9]+-[0-9]+\.iso$ ]] || die "invalid PVE_ISO"
 
@@ -244,6 +246,7 @@ else
 filesystem = "ext4"
 disk-list = $DISKS_JSON
 lvm.swapsize = $SWAP_GIB
+lvm.maxroot = $ROOT_INSTALL_GIB
 lvm.maxvz = 0
 DISK
 )

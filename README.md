@@ -46,7 +46,7 @@ Renovate (`renovate.json`) pins GitHub Actions to commit hashes and opens update
 
 | Target | Install | Storage |
 |---|---|---|
-| `vps` | ext4 on LVM, swap 4 GiB, no thin pool | After the first boot the root volume takes the whole disk. One global storage `local` for VM disks (qcow2, snapshots), ISOs, backups, templates and snippets |
+| `vps` | ext4 on LVM, swap 4 GiB, no thin pool. The root volume is only 20 GiB during the installation (fast on network storage) | After the first boot the root volume takes the whole disk. One global storage `local` for VM disks (qcow2, snapshots), ISOs, backups, templates and snippets |
 | `baremetal` | ZFS (`raid1` by default, `raid0`, `raid10`, `raidz-1/2/3`) | `local` (ISOs, backups) and `local-zfs` (VM disks, snapshots). `ZFS_ARC_MAX_GIB` limits the read cache |
 
 ## Network
