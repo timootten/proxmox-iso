@@ -255,7 +255,7 @@ customize_image() {
     cat > "$bashrc_script" << 'BASHRC_EOF'
 #!/bin/bash
 # Add custom PS1 to /etc/skel/.bashrc and /root/.bashrc
-CUSTOM_PS1='export PS1="\[\e[38;5;1m\]\u\[\e[38;5;7m\]@\[\e[38;5;14m\]\h \[\e[38;5;11m\]\w \[\033[0m\]$ "'
+CUSTOM_PS1='[[ $- == *i* ]] && export PS1="\[\e[38;5;1m\]\u\[\e[38;5;7m\]@\[\e[38;5;14m\]\h \[\e[38;5;11m\]\w \[\033[0m\]$ "'
 
 echo "" >> /etc/skel/.bashrc
 echo "# Custom PS1 prompt" >> /etc/skel/.bashrc
@@ -276,15 +276,15 @@ echo "alias ll='ls -lah'" >> /root/.bashrc
 echo "alias update='apt update && apt upgrade -y'" >> /root/.bashrc
 echo "alias clean='apt autoremove -y && apt autoclean'" >> /root/.bashrc
 echo "" >> /root/.bashrc
-echo "# Show dynamic MOTD on interactive login" >> /root/.bashrc
-echo 'if [ -n "$PS1" ] && [ -x /usr/local/bin/dynamic-motd ]; then' >> /root/.bashrc
+echo "# Show dynamic MOTD on interactive login shells only (never for scp, rsync or ssh commands)" >> /root/.bashrc
+echo 'if [[ $- == *i* ]] && shopt -q login_shell && [ -x /usr/local/bin/dynamic-motd ]; then' >> /root/.bashrc
 echo '    /usr/local/bin/dynamic-motd' >> /root/.bashrc
 echo 'fi' >> /root/.bashrc
 
 # Also add to skel for new users
 echo "" >> /etc/skel/.bashrc
-echo "# Show dynamic MOTD on interactive login" >> /etc/skel/.bashrc
-echo 'if [ -n "$PS1" ] && [ -x /usr/local/bin/dynamic-motd ]; then' >> /etc/skel/.bashrc
+echo "# Show dynamic MOTD on interactive login shells only (never for scp, rsync or ssh commands)" >> /etc/skel/.bashrc
+echo 'if [[ $- == *i* ]] && shopt -q login_shell && [ -x /usr/local/bin/dynamic-motd ]; then' >> /etc/skel/.bashrc
 echo '    /usr/local/bin/dynamic-motd' >> /etc/skel/.bashrc
 echo 'fi' >> /etc/skel/.bashrc
 BASHRC_EOF
