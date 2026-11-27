@@ -1,0 +1,35 @@
+name: Template sources
+
+on:
+  schedule:
+    - cron: '0 5 * * 3'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check all template image URLs
+        id: check
+        run: |
+          set +e
+          ./scripts/check-sources.sh | tee result.txt
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+      - name: Open an issue when an image is gone
+        if: steps.check.outputs.status != '0'
+        run: |
+          title="Template image source is broken"
+          if [ -z "$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "$title in:title" --json number --jq '.[0].number')" ]; then
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" \
+              --body "$(printf 'A template config points to a missing image. Update the IMAGE_URL in templates/configs/.\n\n```\n%s\n```' "$(grep FAIL result.txt)")"
+          fi

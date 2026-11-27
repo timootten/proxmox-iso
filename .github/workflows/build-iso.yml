@@ -7,80 +7,122 @@ on:
         description: 'Proxmox ISO file name, or "latest"'
         default: 'latest'
       target:
-        description: 'vps = one virtual disk, ext4 + LVM. baremetal = physical server, ZFS'
+        description: 'vps = one virtual disk, ext4 + LVM. baremetal = physical server, ZFS. config = config/server.env'
         type: choice
-        options: [vps, baremetal]
-        default: 'vps'
+        options: [config, vps, baremetal]
+        default: 'config'
       fqdn:
         description: 'Hostname with domain (empty = config/server.env)'
         default: ''
       network_mode:
-        description: 'dhcp or static'
         type: choice
-        options: [dhcp, static]
-        default: 'dhcp'
+        description: 'Network (config = config/server.env)'
+        options: [config, dhcp, static]
+        default: 'config'
       ip_cidr:
-        description: 'static only, for example 192.0.2.10/24'
+        description: 'static only, for example 192.0.2.10/24 (empty = config/server.env)'
         default: ''
       gateway:
-        description: 'static only'
+        description: 'static only (empty = config/server.env)'
         default: ''
       disk_list:
-        description: 'Disks, space separated (empty = config/server.env). Example baremetal: nvme0n1 nvme1n1'
+        description: 'Disks, space separated, for example "nvme0n1 nvme1n1" (empty = config/server.env)'
         default: ''
       zfs_raid:
-        description: 'baremetal only: ZFS layout'
+        description: 'baremetal only: ZFS layout (config = config/server.env)'
         type: choice
-        options: [raid1, raid0, raid10, raidz-1, raidz-2, raidz-3]
-        default: 'raid1'
+        options: [config, raid1, raid0, raid10, raidz-1, raidz-2, raidz-3]
+        default: 'config'
+      template_set:
+        description: 'VM templates built on the first boot (config = config/server.env)'
+        type: choice
+        options: [config, none, minimal, standard, all]
+        default: 'config'
+      templates:
+        description: 'Extra templates on top of the set, for example "ubuntu-26.04 fedora-45" (see templates/configs/)'
+        default: ''
       publish:
-        description: 'Publish the result as release "latest" (turn off for test builds)'
+        description: 'Publish the result as a release (turn off for test builds)'
         type: boolean
         default: true
-      templates:
-        description: 'VM templates from the Proxmox-Termplate-Generator repo (configs/<name>.conf), space separated. "none" = skip, empty = config/server.env'
-        default: ''
   push:
     branches: [main]
-    paths: ['scripts/**', 'config/**', '.github/workflows/build-iso.yml']
+    paths: ['scripts/**', 'config/**', 'templates/**', '.github/workflows/build-iso.yml']
+  pull_request:
+    paths: ['scripts/**', 'config/**', 'templates/**', '.github/workflows/build-iso.yml']
   schedule:
-    - cron: '0 4 1 * *'
+    - cron: '0 4 * * 1'
 
 permissions:
   contents: read
 
 concurrency:
-  group: build-iso
-  cancel-in-progress: false
+  group: build-iso-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: shellcheck
-        run: shellcheck scripts/*.sh
+        run: shellcheck scripts/*.sh templates/generate-template.sh templates/motd.sh
 
-  build:
-    needs: lint
+  plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    container: debian:trixie
+    timeout-minutes: 5
+    outputs:
+      needed: ${{ steps.plan.outputs.needed }}
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
+      - id: plan
+        name: Is a new build needed?
+        run: |
+          needed=true
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+            latest=$(curl -fsSL https://download.proxmox.com/iso/ | grep -oE 'proxmox-ve_[0-9]+\.[0-9]+-[0-9]+\.iso' | sort -uV | tail -1)
+            current=$(gh release view --repo "$GITHUB_REPOSITORY" --json body -q .body 2>/dev/null | grep -oE 'proxmox-ve_[0-9]+\.[0-9]+-[0-9]+\.iso' | head -1 || true)
+            echo "Proxmox latest: $latest, in our latest release: ${current:-none}"
+            [ "$latest" = "$current" ] && needed=false
+          fi
+          echo "needed=$needed" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: [lint, plan]
+    if: needs.plan.outputs.needed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [vps, baremetal]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+          ls -l /dev/kvm || echo "no /dev/kvm on this runner"
       - name: Install tools
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl gnupg git xorriso jq openssl
-          curl -fsSL https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gpg \
-            -o /usr/share/keyrings/proxmox-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/proxmox-archive-keyring.gpg] http://download.proxmox.com/debian/pve trixie pve-no-subscription" \
-            > /etc/apt/sources.list.d/pve.list
-          apt-get update
-          apt-get install -y --no-install-recommends proxmox-auto-install-assistant
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils openssh-client
+          ./scripts/install-tools.sh
+      - name: Install the ISO in QEMU and check it
+        run: ./scripts/test-install.sh ${{ matrix.target }}
 
-      - uses: actions/checkout@v7
-
+  build:
+    needs: [lint, plan]
+    if: needs.plan.outputs.needed == 'true' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install tools
+        run: ./scripts/install-tools.sh
       - name: Build ISO
         env:
           PVE_ISO: ${{ inputs.pve_iso }}
@@ -91,10 +133,10 @@ jobs:
           GATEWAY: ${{ inputs.gateway }}
           DISK_LIST: ${{ inputs.disk_list }}
           ZFS_RAID: ${{ inputs.zfs_raid }}
+          TEMPLATE_SET: ${{ inputs.template_set }}
           TEMPLATES: ${{ inputs.templates }}
         run: ./scripts/build-iso.sh
-
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: iso
           path: |
@@ -105,8 +147,8 @@ jobs:
           retention-days: 1
 
   release:
-    needs: build
-    if: github.event_name != 'workflow_dispatch' || inputs.publish
+    needs: [plan, build, test]
+    if: needs.plan.outputs.needed == 'true' && github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.publish)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -114,15 +156,18 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: iso
           path: out
 
-      - name: Publish release "latest"
+      - name: Publish release
         run: |
           set -euo pipefail
           . out/build-info.env
+          VER=$(echo "$PVE_ISO" | sed -E 's/proxmox-ve_(.*)\.iso/\1/')
+          TAG="iso-${VER}-${GITHUB_RUN_NUMBER}"
           cat > notes.md <<NOTES
           Unattended Proxmox VE installer.
 
@@ -132,13 +177,48 @@ jobs:
           | Target | $TARGET |
           | Network | $NETWORK_MODE |
           | Hostname | $FQDN |
+          | Templates | ${TEMPLATE_LIST:-none} |
           | Built | $(date -u +'%Y-%m-%d %H:%M UTC') |
           | Commit | ${GITHUB_SHA::7} |
 
           Login is by SSH key only. Set a password with \`passwd\` to use the web interface.
           The repository is private, get a short-lived download URL with \`scripts/download-url.sh\`.
           NOTES
-          gh release view latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            || gh release create latest --repo "$GITHUB_REPOSITORY" --title "Proxmox VE auto-install ISO" --notes-file notes.md --latest
-          gh release edit latest --repo "$GITHUB_REPOSITORY" --notes-file notes.md --latest
-          gh release upload latest out/proxmox-ve-auto.iso out/proxmox-ve-auto.iso.sha256 --repo "$GITHUB_REPOSITORY" --clobber
+          gh release create "$TAG" out/proxmox-ve-auto.iso out/proxmox-ve-auto.iso.sha256 \
+            --repo "$GITHUB_REPOSITORY" --title "Proxmox VE $VER ($TARGET, build $GITHUB_RUN_NUMBER)" \
+            --notes-file notes.md --latest
+
+          # Keep the five newest ISO releases
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' \
+            | grep '^iso-' | tail -n +6 \
+            | xargs -r -I{} gh release delete {} --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+
+          URL=$(./scripts/download-url.sh "$GITHUB_REPOSITORY" "$TAG")
+          {
+            echo "## ISO ready: $TAG"
+            echo
+            echo "Direct download URL (valid for about one hour). Paste it into the ISO import of your hosting panel:"
+            echo
+            echo '```'
+            echo "$URL"
+            echo '```'
+            echo
+            echo "SHA-256: \`$(cut -d' ' -f1 out/proxmox-ve-auto.iso.sha256)\`"
+            echo
+            echo "A new URL at any time: \`./scripts/download-url.sh\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  alert:
+    needs: [lint, plan, test, build, release]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Scheduled ISO build failed ($(date -u +%F))" \
+            --body "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

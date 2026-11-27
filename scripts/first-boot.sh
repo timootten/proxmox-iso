@@ -12,8 +12,11 @@ TARGET="@@TARGET@@"
 FQDN="@@FQDN@@"
 DNS_SERVERS="@@DNS_SERVERS@@"
 TEMPLATES="@@TEMPLATES@@"
-GENERATOR_REPO="@@GENERATOR_REPO@@"
-GENERATOR_REF="@@GENERATOR_REF@@"
+HOST_AUTO_UPDATE="@@HOST_AUTO_UPDATE@@"
+TEMPLATE_AUTO_REFRESH="@@TEMPLATE_AUTO_REFRESH@@"
+TEMPLATES_B64="@@TEMPLATES_B64@@"
+BRAND_DOCS_URL="@@BRAND_DOCS_URL@@"
+BRAND_SUPPORT_URL="@@BRAND_SUPPORT_URL@@"
 IP_FORWARDING="@@IP_FORWARDING@@"
 MGMT_ALLOWED="@@MGMT_ALLOWED@@"
 ROUTES_B64="@@ROUTES_B64@@"
@@ -171,17 +174,88 @@ vm_templates() {
     local storage=local
     [ "$TARGET" = "baremetal" ] && storage=local-zfs
     apt-get update || return 1
-    DEBIAN_FRONTEND=noninteractive apt-get install -y git libguestfs-tools wget || return 1
-    rm -rf /opt/proxmox-template-generator
-    git clone --depth 1 --branch "$GENERATOR_REF" "https://github.com/$GENERATOR_REPO" /opt/proxmox-template-generator || return 1
-    cd /opt/proxmox-template-generator || return 1
+    DEBIAN_FRONTEND=noninteractive apt-get install -y libguestfs-tools wget || return 1
+    rm -rf /opt/template-generator
+    mkdir -p /opt/template-generator
+    echo "$TEMPLATES_B64" | base64 -d | tar -xzf - -C /opt/template-generator || return 1
+    cd /opt/template-generator || return 1
     local t rc=0
     for t in $TEMPLATES; do
         echo "--- template $t"
         DEFAULT_STORAGE=$storage DEFAULT_BRIDGE=vmbr0 TEMPLATE_IPCONFIG=ip=dhcp \
-            bash generate-template.sh "configs/$t.conf" </dev/null || { echo "template $t failed"; rc=1; }
+            BRAND_DOCS_URL="$BRAND_DOCS_URL" BRAND_SUPPORT_URL="$BRAND_SUPPORT_URL" \
+            bash generate-template.sh "$t" </dev/null || { echo "template $t failed"; rc=1; }
     done
     return $rc
+}
+
+host_auto_updates() {
+    # Debian security updates only, no automatic reboot. Proxmox packages are updated by hand.
+    apt-get update || return 1
+    DEBIAN_FRONTEND=noninteractive apt-get install -y unattended-upgrades || return 1
+    cat > /etc/apt/apt.conf.d/20auto-upgrades <<'APTC'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
+APTC
+    cat > /etc/apt/apt.conf.d/52host-unattended <<'APTC'
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+APTC
+}
+
+template_refresh() {
+    local storage=local
+    [ "$TARGET" = "baremetal" ] && storage=local-zfs
+    cat > /etc/default/template-refresh <<ENVF
+DEFAULT_STORAGE="$storage"
+DEFAULT_BRIDGE="vmbr0"
+TEMPLATE_IPCONFIG="ip=dhcp"
+BRAND_DOCS_URL="$BRAND_DOCS_URL"
+BRAND_SUPPORT_URL="$BRAND_SUPPORT_URL"
+TEMPLATES="$TEMPLATES"
+ENVF
+    cat > /usr/local/sbin/refresh-templates <<'REFRESH'
+#!/bin/bash
+# Rebuilds the VM templates from the current cloud images (monthly, by template-refresh.timer).
+# Templates that still have linked clones are kept: Proxmox refuses to destroy them.
+set -u
+. /etc/default/template-refresh
+export DEFAULT_STORAGE DEFAULT_BRIDGE TEMPLATE_IPCONFIG BRAND_DOCS_URL BRAND_SUPPORT_URL ASSUME_YES=1 REFRESH_IMAGE=1
+cd /opt/template-generator || exit 1
+rc=0
+for t in $TEMPLATES; do
+    echo "--- $(date) refreshing $t"
+    bash generate-template.sh "$t" </dev/null || { echo "failed: $t"; rc=1; }
+done
+exit $rc
+REFRESH
+    chmod 755 /usr/local/sbin/refresh-templates
+    cat > /etc/systemd/system/template-refresh.service <<'UNIT'
+[Unit]
+Description=Rebuild VM templates from current cloud images
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=2h
+ExecStart=/usr/local/sbin/refresh-templates
+UNIT
+    cat > /etc/systemd/system/template-refresh.timer <<'UNIT'
+[Unit]
+Description=Monthly VM template refresh
+
+[Timer]
+OnCalendar=monthly
+RandomizedDelaySec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+    systemctl daemon-reload
+    systemctl enable --now template-refresh.timer
 }
 
 if [ "$TARGET" = "vps" ]; then
@@ -192,13 +266,15 @@ fi
 step "ssh hardening" ssh_hardening
 step "apt repositories" apt_repos
 step "dns" dns
+step "network" wait_for_network
+[ "$HOST_AUTO_UPDATE" = "security" ] && step "automatic security updates" host_auto_updates
 [ "$IP_FORWARDING" = "true" ] && step "ip forwarding" forwarding
 [ -n "$SNIPPETS_B64" ] && step "interface snippets" interface_snippets
 [ -n "$ROUTES_B64" ] && step "static routes" static_routes
 [ -n "$MGMT_ALLOWED" ] && step "host firewall" host_firewall
 if [ -n "$TEMPLATES" ]; then
-    step "network" wait_for_network
     step "vm templates" vm_templates
+    [ "$TEMPLATE_AUTO_REFRESH" = "true" ] && step "monthly template refresh" template_refresh
 fi
 
 if [ "${#FAILED[@]}" -eq 0 ]; then

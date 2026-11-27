@@ -12,6 +12,11 @@ cd "$(dirname "$0")/.."
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+# Workflow choices named "config" mean: take the value from config/server.env
+for v in TARGET NETWORK_MODE ZFS_RAID TEMPLATE_SET; do
+    [ "${!v:-}" = "config" ] && unset "$v"
+done
+
 # ---- Load config/server.env (only for variables that are unset or empty) ----
 if [ -f config/server.env ]; then
     while IFS='=' read -r key value; do
@@ -41,12 +46,17 @@ ZFS_ARC_MAX_GIB="${ZFS_ARC_MAX_GIB:-}"
 SWAP_GIB="${SWAP_GIB:-4}"
 IP_FORWARDING="${IP_FORWARDING:-auto}"
 MGMT_ALLOWED="${MGMT_ALLOWED:-}"
-TEMPLATES="${TEMPLATES:-none}"
-GENERATOR_REPO="${GENERATOR_REPO:-timootten/Proxmox-Termplate-Generator}"
-GENERATOR_REF="${GENERATOR_REF:-main}"
+HOST_AUTO_UPDATE="${HOST_AUTO_UPDATE:-security}"
+TEMPLATE_AUTO_REFRESH="${TEMPLATE_AUTO_REFRESH:-true}"
+TEMPLATE_LANG="${TEMPLATE_LANG:-de}"
+TEMPLATE_SET="${TEMPLATE_SET:-none}"
+TEMPLATES="${TEMPLATES:-}"
+BRAND_DOCS_URL="${BRAND_DOCS_URL:-}"
+BRAND_SUPPORT_URL="${BRAND_SUPPORT_URL:-}"
+EXTRA_SSH_KEYS="${EXTRA_SSH_KEYS:-}"
+EXTRA_STATIC_ROUTES="${EXTRA_STATIC_ROUTES:-}"
 OUT_DIR="${OUT_DIR:-out}"
 OUT_NAME="${OUT_NAME:-proxmox-ve-auto.iso}"
-[ "$TEMPLATES" = "none" ] && TEMPLATES=""
 
 # ---- Validation -------------------------------------------------------------
 for cmd in proxmox-auto-install-assistant xorriso curl jq openssl; do
@@ -55,6 +65,8 @@ done
 
 case "$TARGET" in vps|baremetal) ;; *) die "TARGET must be vps or baremetal" ;; esac
 case "$NETWORK_MODE" in dhcp|static) ;; *) die "NETWORK_MODE must be dhcp or static" ;; esac
+case "$HOST_AUTO_UPDATE" in security|none) ;; *) die "HOST_AUTO_UPDATE must be security or none" ;; esac
+case "$TEMPLATE_AUTO_REFRESH" in true|false) ;; *) die "TEMPLATE_AUTO_REFRESH must be true or false" ;; esac
 case "$IP_FORWARDING" in auto|true|false) ;; *) die "IP_FORWARDING must be auto, true or false" ;; esac
 
 [[ "$FQDN" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$ ]] \
@@ -94,11 +106,24 @@ else
     [ "${#DISK_ARRAY[@]}" -eq 1 ] || die "TARGET=vps expects exactly one disk in DISK_LIST"
 fi
 
-for t in $TEMPLATES; do
+[[ "$TEMPLATE_LANG" =~ ^(de|en)$ ]] || die "TEMPLATE_LANG must be de or en"
+[[ "$BRAND_DOCS_URL$BRAND_SUPPORT_URL" =~ ^[A-Za-z0-9:/._?=#%+~-]*$ ]] || die "invalid characters in BRAND_*_URL"
+
+# Resolve the template set and the extra names into one list
+SET_NAMES=""
+case "$TEMPLATE_SET" in
+    none) ;;
+    all)  SET_NAMES=$(cd "templates/configs/$TEMPLATE_LANG" && find . -name '*.conf' | sed 's|^\./||; s|\.conf$||' | sort | tr '\n' ' ') ;;
+    *)    SET_NAMES=$(awk -F= -v k="$TEMPLATE_SET" '$1==k {print $2}' templates/sets.env)
+          [ -n "$SET_NAMES" ] || die "unknown TEMPLATE_SET '$TEMPLATE_SET' (see templates/sets.env)" ;;
+esac
+TEMPLATE_LIST=$(echo "$SET_NAMES $TEMPLATES" | tr ' ' '\n' | awk 'NF && !seen[$0]++' | tr '\n' ' ' | sed 's/ $//')
+TEMPLATE_FILES=()
+for t in $TEMPLATE_LIST; do
     [[ "$t" =~ ^[A-Za-z0-9._/-]+$ && "$t" != *..* ]] || die "invalid template name '$t'"
+    [ -f "templates/configs/$TEMPLATE_LANG/$t.conf" ] || die "template '$t' does not exist in templates/configs/$TEMPLATE_LANG/"
+    TEMPLATE_FILES+=("configs/$TEMPLATE_LANG/$t.conf")
 done
-[[ "$GENERATOR_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ && "$GENERATOR_REF" =~ ^[A-Za-z0-9._/-]+$ ]] \
-    || die "invalid GENERATOR_REPO or GENERATOR_REF"
 for c in $MGMT_ALLOWED; do
     [[ "$c" =~ ^[0-9A-Fa-f.:]+(/[0-9]{1,3})?$ ]] || die "invalid MGMT_ALLOWED entry '$c'"
 done
@@ -123,8 +148,8 @@ echo "$EXPECTED  work/$PVE_ISO" | sha256sum -c -
 
 # ---- SSH keys ---------------------------------------------------------------
 echo "==> Collecting SSH keys"
-KEY_SOURCES=""
-[ -f config/authorized_keys ] && KEY_SOURCES=$(cat config/authorized_keys)
+KEY_SOURCES="$EXTRA_SSH_KEYS"
+[ -f config/authorized_keys ] && KEY_SOURCES+=$'\n'"$(cat config/authorized_keys)"
 if [ -n "$GITHUB_KEYS_USER" ]; then
     KEY_SOURCES+=$'\n'"$(curl -fsSL "https://github.com/$GITHUB_KEYS_USER.keys" || true)"
 fi
@@ -194,11 +219,16 @@ ordering = "fully-up"
 TOML
 
 # ---- First boot script ------------------------------------------------------
-ROUTES_B64=$(grep -vE '^[[:space:]]*(#|$)' config/static-routes.conf 2>/dev/null | base64 -w0 || true)
+ROUTES_B64=$({ cat config/static-routes.conf 2>/dev/null || true; printf '\n%s\n' "$EXTRA_STATIC_ROUTES"; } | grep -vE '^[[:space:]]*(#|$)' | base64 -w0 || true)
 SNIPPETS=$(find config/interfaces.d -maxdepth 1 -name '*.cfg' -type f 2>/dev/null | sort || true)
 SNIPPETS_B64=""
 if [ -n "$SNIPPETS" ]; then
     SNIPPETS_B64=$(cd config/interfaces.d && tar -czf - -- *.cfg | base64 -w0)
+fi
+
+TEMPLATES_B64=""
+if [ "${#TEMPLATE_FILES[@]}" -gt 0 ]; then
+    TEMPLATES_B64=$(tar -czf - -C templates generate-template.sh global.conf motd.sh "${TEMPLATE_FILES[@]}" | base64 -w0)
 fi
 
 if [ "$IP_FORWARDING" = "auto" ]; then
@@ -208,9 +238,12 @@ fi
 sed -e "s|@@TARGET@@|$TARGET|" \
     -e "s|@@FQDN@@|$FQDN|" \
     -e "s|@@DNS_SERVERS@@|$DNS_SERVERS|" \
-    -e "s|@@TEMPLATES@@|$TEMPLATES|" \
-    -e "s|@@GENERATOR_REPO@@|$GENERATOR_REPO|" \
-    -e "s|@@GENERATOR_REF@@|$GENERATOR_REF|" \
+    -e "s|@@TEMPLATES@@|${TEMPLATE_FILES[*]:-}|" \
+    -e "s|@@HOST_AUTO_UPDATE@@|$HOST_AUTO_UPDATE|" \
+    -e "s|@@TEMPLATE_AUTO_REFRESH@@|$TEMPLATE_AUTO_REFRESH|" \
+    -e "s|@@TEMPLATES_B64@@|$TEMPLATES_B64|" \
+    -e "s|@@BRAND_DOCS_URL@@|$BRAND_DOCS_URL|" \
+    -e "s|@@BRAND_SUPPORT_URL@@|$BRAND_SUPPORT_URL|" \
     -e "s|@@IP_FORWARDING@@|$IP_FORWARDING|" \
     -e "s|@@MGMT_ALLOWED@@|$MGMT_ALLOWED|" \
     -e "s|@@ROUTES_B64@@|$ROUTES_B64|" \
@@ -218,7 +251,9 @@ sed -e "s|@@TARGET@@|$TARGET|" \
     scripts/first-boot.sh > work/first-boot.sh
 bash -n work/first-boot.sh
 if grep -q '@@' work/first-boot.sh; then die "unreplaced placeholder in first-boot.sh"; fi
-[ "$(stat -c %s work/first-boot.sh)" -lt 1048576 ] || die "first-boot.sh exceeds 1 MiB"
+FB_SIZE=$(stat -c %s work/first-boot.sh)
+[ "$FB_SIZE" -lt 1000000 ] || die "first-boot.sh is $FB_SIZE bytes, the limit is 1 MiB"
+echo "==> first-boot.sh: $FB_SIZE bytes, templates: ${TEMPLATE_FILES[*]:-none}"
 
 # ---- Build ------------------------------------------------------------------
 echo "==> Validating answer file"
@@ -241,6 +276,7 @@ PVE_ISO=$PVE_ISO
 TARGET=$TARGET
 NETWORK_MODE=$NETWORK_MODE
 FQDN=$FQDN
+TEMPLATE_LIST="${TEMPLATE_LIST:-none}"
 INFO
 echo "==> Done"
 ls -lh "$OUT_DIR"
