@@ -86,11 +86,11 @@ if [ -z "$IP_CIDR$IPV6_CIDR" ]; then
     die "set an IPv4 address (IP_CIDR + GATEWAY) or an IPv6 address (IPV6_CIDR + IPV6_GATEWAY), or both. DHCP is not supported."
 fi
 if [ -n "$IP_CIDR$GATEWAY" ]; then
-    [[ "$IP_CIDR" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]] || die "IP_CIDR needs an address with prefix, for example 192.0.2.10/24"
+    [[ "$IP_CIDR" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]] || die "IP_CIDR needs the prefix as well, like 192.0.2.10/24 (got '$IP_CIDR')"
     [[ "$GATEWAY" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || die "GATEWAY is required together with IP_CIDR, for example 192.0.2.1"
 fi
 if [ -n "$IPV6_CIDR$IPV6_GATEWAY" ]; then
-    [[ "$IPV6_CIDR" =~ ^[0-9A-Fa-f:]+:[0-9A-Fa-f:]*/[0-9]{1,3}$ ]] || die "IPV6_CIDR needs an address with prefix, like 2001:db8::10/64"
+    [[ "$IPV6_CIDR" =~ ^[0-9A-Fa-f:]+:[0-9A-Fa-f:]*/[0-9]{1,3}$ ]] || die "IPV6_CIDR needs the prefix as well, like 2001:db8::10/64 (got '$IPV6_CIDR')"
     [[ "$IPV6_GATEWAY" =~ ^[0-9A-Fa-f:]+$ ]] || die "IPV6_GATEWAY is required together with IPV6_CIDR"
 fi
 command -v python3 >/dev/null || die "missing tool: python3"

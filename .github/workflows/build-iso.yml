@@ -56,10 +56,15 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install tools
         run: ./scripts/install-tools.sh
+
       - name: Build ISO
         env:
           TARGET: ${{ inputs.target }}
@@ -74,30 +79,6 @@ jobs:
           MGMT_ALLOWED: ${{ inputs.mgmt_allowed }}
           TEMPLATE_SET: ${{ inputs.template_set }}
         run: ./scripts/build-iso.sh
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: iso
-          path: |
-            out/proxmox-ve-auto.iso
-            out/proxmox-ve-auto.iso.sha256
-            out/build-info.env
-          compression-level: 0
-          retention-days: 1
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: iso
-          path: out
 
       - name: Publish release
         run: |
@@ -129,15 +110,19 @@ jobs:
             | grep '^iso-' | tail -n +6 \
             | xargs -r -I{} gh release delete {} --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
 
-          URL=$(./scripts/download-url.sh "$GITHUB_REPOSITORY" "$TAG")
+          URL=$(./scripts/download-url.sh "$GITHUB_REPOSITORY" "$TAG") || URL=""
           {
             echo "## ISO ready: $TAG"
             echo
-            echo "Direct download URL (valid for about one hour). Paste it into the ISO import of your hosting panel:"
-            echo
-            echo '```'
-            echo "$URL"
-            echo '```'
+            if [ -n "$URL" ]; then
+              echo "Direct download URL (valid for about one hour). Paste it into the ISO import of your hosting panel:"
+              echo
+              echo '```'
+              echo "$URL"
+              echo '```'
+            else
+              echo "The ISO is published, but no download URL could be created. Run \`./scripts/download-url.sh\` on your computer."
+            fi
             echo
             echo "SHA-256: \`$(cut -d' ' -f1 out/proxmox-ve-auto.iso.sha256)\`"
             echo
