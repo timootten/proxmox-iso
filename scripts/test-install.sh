@@ -24,7 +24,7 @@ TARGET="$TARGET" IP_CIDR=10.0.2.15/24 GATEWAY=10.0.2.2 IPV6_CIDR=fec0::10/64 IPV
     FQDN=pve-test.example.com TEMPLATE_SET=none TEMPLATES="" \
     DISK_LIST="$DISKS" ZFS_RAID=raid1 ZFS_ARC_MAX_GIB="" OUT_DIR="$WORK/out" \
     EXTRA_SSH_KEYS="$(cat "$WORK/key.pub")" EXTRA_STATIC_ROUTES="10.99.0.0/24 via 10.0.2.2" \
-    MGMT_ALLOWED="" IP_FORWARDING=auto \
+    MGMT_ALLOWED="" IP_FORWARDING=auto REBOOT_AFTER_UPGRADE=false \
     ./scripts/build-iso.sh
 ISO="$WORK/out/proxmox-ve-auto.iso"
 
@@ -69,7 +69,7 @@ done
 "${SSH[@]}" true || { echo "FAIL: SSH is not reachable"; exit 1; }
 
 echo "==> Waiting for the first boot script"
-for _ in $(seq 1 90); do
+for _ in $(seq 1 150); do
     "${SSH[@]}" 'test -f /var/lib/first-boot-custom.status' 2>/dev/null && break
     sleep 10
 done
@@ -102,6 +102,10 @@ check "static IPv6 on vmbr0" 'ip -6 addr show vmbr0 | grep -q "fec0::10/64"'
 check "private network vmbr1 is up" 'ip -4 addr show vmbr1 | grep -q "10.10.0.1/24"'
 check "NAT rule for vmbr1" 'iptables -t nat -S POSTROUTING | grep -q "10.10.0.0/24.*MASQUERADE"'
 check "dnsmasq runs and DNS is bound to vmbr1 only" 'systemctl is-active --quiet dnsmasq && ! ss -lunH | awk "{print \$4}" | grep -E ":53$" | grep -vE "%vmbr1:53$|^(10\.10\.0\.1|127\.0\.0\.1|\[::1\]):53$" | grep -q .'
+check "tools installed" 'for c in curl wget fastfetch iperf3 btop htop; do command -v $c >/dev/null || exit 1; done'
+check "no pending upgrades" '[ "$(apt-get update -qq >/dev/null 2>&1; apt-get -s dist-upgrade | grep -c "^Inst ")" = 0 ]'
+check "login banner installed" '[ -x /usr/local/bin/dynamic-motd ] && /usr/local/bin/dynamic-motd | grep -q "Welcome to" && [ -f /etc/profile.d/99-andotta-motd.sh ]'
+check "custom prompt for root" 'bash -ic "echo \$PS1" 2>/dev/null | grep -q "38;5;1m"'
 check "unattended security updates enabled" 'grep -q "Unattended-Upgrade \"1\"" /etc/apt/apt.conf.d/20auto-upgrades'
 if [ "$TARGET" = "vps" ]; then
     check "one global storage (local, no local-lvm)" 'pvesm status | awk "NR>1 {print \$1}" | grep -qx local && ! pvesm status | grep -q local-lvm'

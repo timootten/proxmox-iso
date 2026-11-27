@@ -31,6 +31,9 @@ else
 fi
 
 echo -e "${GREEN}Welcome to $OS_NAME${NC}"
+if command -v pveversion >/dev/null 2>&1; then
+    echo -e "${GREEN}$(pveversion 2>/dev/null | head -n1)  |  kernel $(uname -r)${NC}"
+fi
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 

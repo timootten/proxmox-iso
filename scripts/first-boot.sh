@@ -11,6 +11,7 @@ echo "=== first boot $(date) ==="
 #@@SETTINGS@@
 
 FAILED=()
+NEED_REBOOT=false
 step() {
     local name=$1
     shift
@@ -114,8 +115,79 @@ APT::Periodic::AutocleanInterval "7";
 APTC
     cat > /etc/apt/apt.conf.d/52host-unattended <<'APTC'
 Unattended-Upgrade::Automatic-Reboot "false";
-Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "false";
 APTC
+}
+
+# ---- System -----------------------------------------------------------------
+
+system_upgrade() {
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update || return 1
+    apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold dist-upgrade || return 1
+
+    if [ "$KERNEL" = "latest" ]; then
+        # Newest opt-in kernel (the default kernel of Proxmox follows its own meta package)
+        local newest
+        newest=$(apt-cache search --names-only '^proxmox-kernel-[0-9]+\.[0-9]+$' | awk '{print $1}' | sort -V | tail -1)
+        if [ -n "$newest" ]; then
+            apt-get -y install "$newest" || return 1
+        fi
+    fi
+
+    # Old kernels stay installed as a fallback. A reboot is needed when a newer one than the running kernel exists.
+    local running installed
+    running=$(uname -r)
+    installed=$(find /boot -maxdepth 1 -name 'vmlinuz-*' | sed 's|.*/vmlinuz-||' | sort -V | tail -1)
+    if [ -n "$installed" ] && [ "$installed" != "$running" ]; then
+        echo "kernel $installed is installed, running $running"
+        NEED_REBOOT=true
+    fi
+}
+
+host_tools() {
+    export DEBIAN_FRONTEND=noninteractive
+    local pkgs="$HOST_PACKAGES" p rc=0
+    [ "$TARGET" = "vps" ] && pkgs="$pkgs qemu-guest-agent"
+    apt-get update || return 1
+    for p in $pkgs; do
+        apt-get -y install "$p" || { echo "package $p could not be installed"; rc=1; }
+    done
+    if [ "$TARGET" = "baremetal" ]; then
+        # CPU microcode (needs the non-free-firmware component, so failing is not an error)
+        if grep -q GenuineIntel /proc/cpuinfo; then p=intel-microcode; else p=amd64-microcode; fi
+        apt-get -y install "$p" || echo "note: $p is not available in the configured repositories"
+    fi
+    systemctl enable --now qemu-guest-agent 2>/dev/null || true
+    return $rc
+}
+
+shell_setup() {
+    # Login banner: only for interactive login shells (SSH, console)
+    echo "$MOTD_B64" | base64 -d > /usr/local/bin/dynamic-motd || return 1
+    chmod 755 /usr/local/bin/dynamic-motd
+    cat > /etc/profile.d/99-andotta-motd.sh <<'MOTD'
+case $- in
+    *i*) [ -x /usr/local/bin/dynamic-motd ] && /usr/local/bin/dynamic-motd ;;
+esac
+MOTD
+    : > /etc/motd
+
+    # Prompt and aliases for root and for new users
+    local f
+    for f in /root/.bashrc /etc/skel/.bashrc; do
+        [ -f "$f" ] || touch "$f"
+        grep -q '# >>> andotta prompt' "$f" && continue
+        cat >> "$f" <<'BASHRC'
+
+# >>> andotta prompt
+PS1='\[\e[38;5;1m\]\u\[\e[38;5;7m\]@\[\e[38;5;14m\]\h \[\e[38;5;11m\]\w \[\033[0m\]$ '
+alias ll='ls -alF --color=auto'
+alias update='apt update && apt full-upgrade'
+alias clean='apt autoremove'
+# <<< andotta prompt
+BASHRC
+    done
 }
 
 # ---- Security ---------------------------------------------------------------
@@ -438,6 +510,9 @@ step "apt repositories" apt_repos
 [ "$SUBSCRIPTION_NAG" = "hide" ] && step "hide subscription pop-up" subscription_nag
 step "dns" dns
 step "network" wait_for_network
+[ "$SYSTEM_UPGRADE" = "true" ] && step "system upgrade (apt update, dist-upgrade, kernel)" system_upgrade
+[ -n "$HOST_PACKAGES" ] && step "tools" host_tools
+step "prompt and login banner" shell_setup
 [ "$HOST_AUTO_UPDATE" = "security" ] && step "automatic security updates" host_auto_updates
 
 if [ "$HARDENING" = "true" ]; then
@@ -467,4 +542,10 @@ if [ "${#FAILED[@]}" -eq 0 ]; then
 else
     echo "FAILED: ${FAILED[*]}" > "$STATUS"
     echo "=== first boot finished with errors: ${FAILED[*]} ==="
+fi
+
+# A new kernel only runs after a reboot. Previous kernels stay installed as a fallback.
+if [ "$NEED_REBOOT" = "true" ] && [ "$REBOOT_AFTER_UPGRADE" = "true" ]; then
+    echo "rebooting in one minute to run the new kernel"
+    shutdown -r +1 "First boot setup finished, rebooting into the new kernel"
 fi
