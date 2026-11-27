@@ -1,0 +1,39 @@
+name: Test installation (manual)
+
+# Installs a test ISO in QEMU and checks the result over SSH. Takes about 12 minutes.
+# Only runs when started by hand, for example before a larger change or a Renovate update.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Which install to test'
+        type: choice
+        options: [both, vps, baremetal]
+        default: 'both'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(inputs.target == 'both' && '["vps","baremetal"]' || format('["{0}"]', inputs.target)) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils openssh-client
+          ./scripts/install-tools.sh
+      - name: Install the ISO in QEMU and check it
+        run: ./scripts/test-install.sh ${{ matrix.target }}

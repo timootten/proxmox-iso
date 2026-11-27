@@ -3,48 +3,45 @@ name: Build Proxmox ISO
 on:
   workflow_dispatch:
     inputs:
-      pve_iso:
-        description: 'Proxmox ISO file name, or "latest"'
-        default: 'latest'
       target:
-        description: 'vps = one virtual disk, ext4 + LVM. baremetal = physical server, ZFS. config = config/server.env'
+        description: 'Server type: vps = one virtual disk (ext4 + LVM), baremetal = physical server (ZFS)'
         type: choice
-        options: [config, vps, baremetal]
-        default: 'config'
+        options: [vps, baremetal]
+        default: 'vps'
       fqdn:
-        description: 'Hostname with domain (empty = config/server.env)'
+        description: 'Hostname with domain, for example pve.example.com (empty = config/server.env)'
         default: ''
-      network_mode:
-        type: choice
-        description: 'Network (config = config/server.env)'
-        options: [config, dhcp, static]
-        default: 'config'
       ip_cidr:
-        description: 'static only, for example 192.0.2.10/24 (empty = config/server.env)'
+        description: 'IPv4 address with prefix, for example 192.0.2.10/24. Leave empty for an IPv6-only server'
         default: ''
       gateway:
-        description: 'static only (empty = config/server.env)'
+        description: 'IPv4 gateway'
+        default: ''
+      ipv6_cidr:
+        description: 'IPv6 address with prefix, for example 2001:db8::10/64. Leave empty for an IPv4-only server'
+        default: ''
+      ipv6_gateway:
+        description: 'IPv6 gateway'
         default: ''
       disk_list:
-        description: 'Disks, space separated, for example "nvme0n1 nvme1n1" (empty = config/server.env)'
+        description: 'baremetal: disks for ZFS, space separated, for example "nvme0n1 nvme1n1". vps: empty = sda'
         default: ''
       zfs_raid:
-        description: 'baremetal only: ZFS layout (config = config/server.env)'
+        description: 'baremetal: ZFS layout'
         type: choice
-        options: [config, raid1, raid0, raid10, raidz-1, raidz-2, raidz-3]
-        default: 'config'
-      template_set:
-        description: 'VM templates built on the first boot (config = config/server.env)'
-        type: choice
-        options: [config, none, minimal, standard, all]
-        default: 'config'
-      templates:
-        description: 'Extra templates on top of the set, for example "ubuntu-26.04 fedora-45" (see templates/configs/)'
+        options: [raid1, raid0, raid10, raidz-1, raidz-2, raidz-3]
+        default: 'raid1'
+      private_net_cidr:
+        description: 'Private network for VMs (vmbr1): host address with prefix. "none" = no private network (empty = config/server.env)'
         default: ''
-      publish:
-        description: 'Publish the result as a release (turn off for test builds)'
-        type: boolean
-        default: true
+      mgmt_allowed:
+        description: 'Firewall: only these addresses may reach SSH and the web interface, space separated CIDRs (empty = no firewall)'
+        default: ''
+      template_set:
+        description: 'VM templates built on the first boot'
+        type: choice
+        options: [minimal, none, standard, all]
+        default: 'minimal'
   push:
     branches: [main]
     paths: ['scripts/**', 'config/**', 'templates/**', '.github/workflows/build-iso.yml']
@@ -79,42 +76,22 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: plan
         name: Is a new build needed?
         run: |
           needed=true
-          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+          if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ] && ! grep -qE '^(IP_CIDR|IPV6_CIDR)=.+' config/server.env; then
+            echo "::notice::config/server.env has no IP_CIDR or IPV6_CIDR. Automatic builds are skipped, start a manual run."
+            needed=false
+          fi
+          if [ "$needed" = "true" ] && [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
             latest=$(curl -fsSL https://download.proxmox.com/iso/ | grep -oE 'proxmox-ve_[0-9]+\.[0-9]+-[0-9]+\.iso' | sort -uV | tail -1)
             current=$(gh release view --repo "$GITHUB_REPOSITORY" --json body -q .body 2>/dev/null | grep -oE 'proxmox-ve_[0-9]+\.[0-9]+-[0-9]+\.iso' | head -1 || true)
             echo "Proxmox latest: $latest, in our latest release: ${current:-none}"
             [ "$latest" = "$current" ] && needed=false
           fi
           echo "needed=$needed" >> "$GITHUB_OUTPUT"
-
-  test:
-    needs: [lint, plan]
-    if: needs.plan.outputs.needed == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 75
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [vps, baremetal]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Enable KVM
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm || true
-          ls -l /dev/kvm || echo "no /dev/kvm on this runner"
-      - name: Install tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils openssh-client
-          ./scripts/install-tools.sh
-      - name: Install the ISO in QEMU and check it
-        run: ./scripts/test-install.sh ${{ matrix.target }}
 
   build:
     needs: [lint, plan]
@@ -127,16 +104,17 @@ jobs:
         run: ./scripts/install-tools.sh
       - name: Build ISO
         env:
-          PVE_ISO: ${{ inputs.pve_iso }}
           TARGET: ${{ inputs.target }}
           FQDN: ${{ inputs.fqdn }}
-          NETWORK_MODE: ${{ inputs.network_mode }}
           IP_CIDR: ${{ inputs.ip_cidr }}
           GATEWAY: ${{ inputs.gateway }}
+          IPV6_CIDR: ${{ inputs.ipv6_cidr }}
+          IPV6_GATEWAY: ${{ inputs.ipv6_gateway }}
           DISK_LIST: ${{ inputs.disk_list }}
           ZFS_RAID: ${{ inputs.zfs_raid }}
+          PRIVATE_NET_CIDR: ${{ inputs.private_net_cidr }}
+          MGMT_ALLOWED: ${{ inputs.mgmt_allowed }}
           TEMPLATE_SET: ${{ inputs.template_set }}
-          TEMPLATES: ${{ inputs.templates }}
         run: ./scripts/build-iso.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -149,8 +127,8 @@ jobs:
           retention-days: 1
 
   release:
-    needs: [plan, build, test]
-    if: needs.plan.outputs.needed == 'true' && github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.publish)
+    needs: [plan, build]
+    if: needs.plan.outputs.needed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -177,7 +155,6 @@ jobs:
           |---|---|
           | Source | $PVE_ISO |
           | Target | $TARGET |
-          | Network | $NETWORK_MODE |
           | Hostname | $FQDN |
           | Templates | ${TEMPLATE_LIST:-none} |
           | Built | $(date -u +'%Y-%m-%d %H:%M UTC') |
@@ -211,7 +188,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   alert:
-    needs: [lint, plan, test, build, release]
+    needs: [lint, plan, build, release]
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 5

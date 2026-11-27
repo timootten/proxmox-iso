@@ -20,7 +20,8 @@ DISK_COUNT=1
 if [ "$TARGET" = "baremetal" ]; then DISKS="sda sdb"; DISK_COUNT=2; fi
 
 echo "==> Building test ISO ($TARGET)"
-TARGET="$TARGET" NETWORK_MODE=dhcp FQDN=pve-test.example.com TEMPLATE_SET=none TEMPLATES="" \
+TARGET="$TARGET" IP_CIDR=10.0.2.15/24 GATEWAY=10.0.2.2 IPV6_CIDR=fec0::10/64 IPV6_GATEWAY=fec0::2 \
+    FQDN=pve-test.example.com TEMPLATE_SET=none TEMPLATES="" \
     DISK_LIST="$DISKS" ZFS_RAID=raid1 ZFS_ARC_MAX_GIB="" OUT_DIR="$WORK/out" \
     EXTRA_SSH_KEYS="$(cat "$WORK/key.pub")" EXTRA_STATIC_ROUTES="10.99.0.0/24 via 10.0.2.2" \
     MGMT_ALLOWED="" IP_FORWARDING=auto \
@@ -93,6 +94,14 @@ check "DNS resolvers set" 'grep -q "nameserver 1.1.1.1" /etc/resolv.conf && grep
 check "enterprise repository disabled" 'grep -q "^Enabled: no" /etc/apt/sources.list.d/pve-enterprise.sources'
 check "static route applied" 'ip route | grep -q "^10.99.0.0/24"'
 check "IP forwarding on" '[ "$(sysctl -n net.ipv4.ip_forward)" = 1 ]'
+check "subscription pop-up hidden" 'grep -q "void({ //Ext.Msg.show" /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js'
+check "fail2ban jails sshd and proxmox" 'fail2ban-client status | grep -q sshd && fail2ban-client status | grep -q proxmox'
+check "rpcbind is off" '! systemctl is-active --quiet rpcbind'
+check "static IPv4 on vmbr0" 'ip -4 addr show vmbr0 | grep -q "10.0.2.15/24"'
+check "static IPv6 on vmbr0" 'ip -6 addr show vmbr0 | grep -q "fec0::10/64"'
+check "private network vmbr1 is up" 'ip -4 addr show vmbr1 | grep -q "10.10.0.1/24"'
+check "NAT rule for vmbr1" 'iptables -t nat -S POSTROUTING | grep -q "10.10.0.0/24.*MASQUERADE"'
+check "DHCP and DNS on vmbr1 only" 'systemctl is-active --quiet dnsmasq && ! ss -lun | grep -E ":(53|67) " | grep -vE "10.10.0.1|127.0.0.1|::1" | grep -q .'
 check "unattended security updates enabled" 'grep -q "Unattended-Upgrade \"1\"" /etc/apt/apt.conf.d/20auto-upgrades'
 if [ "$TARGET" = "vps" ]; then
     check "one global storage (local, no local-lvm)" 'pvesm status | awk "NR>1 {print \$1}" | grep -qx local && ! pvesm status | grep -q local-lvm'

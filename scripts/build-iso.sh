@@ -12,11 +12,6 @@ cd "$(dirname "$0")/.."
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
-# Workflow choices named "config" mean: take the value from config/server.env
-for v in TARGET NETWORK_MODE ZFS_RAID TEMPLATE_SET; do
-    [ "${!v:-}" = "config" ] && unset "$v"
-done
-
 # ---- Load config/server.env (only for variables that are unset or empty) ----
 if [ -f config/server.env ]; then
     while IFS='=' read -r key value; do
@@ -36,7 +31,6 @@ COUNTRY="${COUNTRY:-de}"
 KEYBOARD="${KEYBOARD:-de}"
 TIMEZONE="${TIMEZONE:-Europe/Berlin}"
 GITHUB_KEYS_USER="${GITHUB_KEYS_USER:-}"
-NETWORK_MODE="${NETWORK_MODE:-dhcp}"
 IP_CIDR="${IP_CIDR:-}"
 GATEWAY="${GATEWAY:-}"
 DNS_SERVERS="${DNS_SERVERS:-1.1.1.1 8.8.8.8 2606:4700:4700::1111 2001:4860:4860::8888}"
@@ -44,6 +38,15 @@ DISK_LIST="${DISK_LIST:-sda}"
 ZFS_RAID="${ZFS_RAID:-raid1}"
 ZFS_ARC_MAX_GIB="${ZFS_ARC_MAX_GIB:-}"
 SWAP_GIB="${SWAP_GIB:-4}"
+IPV6_CIDR="${IPV6_CIDR:-}"
+IPV6_GATEWAY="${IPV6_GATEWAY:-}"
+IPV6_GATEWAY_ONLINK="${IPV6_GATEWAY_ONLINK:-true}"
+PRIVATE_NET="${PRIVATE_NET:-true}"
+PRIVATE_NET_CIDR="${PRIVATE_NET_CIDR:-10.10.0.1/24}"
+PRIVATE_NET_NAT="${PRIVATE_NET_NAT:-true}"
+PRIVATE_NET_DHCP="${PRIVATE_NET_DHCP:-true}"
+HARDENING="${HARDENING:-true}"
+SUBSCRIPTION_NAG="${SUBSCRIPTION_NAG:-hide}"
 IP_FORWARDING="${IP_FORWARDING:-auto}"
 MGMT_ALLOWED="${MGMT_ALLOWED:-}"
 HOST_AUTO_UPDATE="${HOST_AUTO_UPDATE:-security}"
@@ -64,9 +67,12 @@ for cmd in proxmox-auto-install-assistant xorriso curl jq openssl; do
 done
 
 case "$TARGET" in vps|baremetal) ;; *) die "TARGET must be vps or baremetal" ;; esac
-case "$NETWORK_MODE" in dhcp|static) ;; *) die "NETWORK_MODE must be dhcp or static" ;; esac
 case "$HOST_AUTO_UPDATE" in security|none) ;; *) die "HOST_AUTO_UPDATE must be security or none" ;; esac
 case "$TEMPLATE_AUTO_REFRESH" in true|false) ;; *) die "TEMPLATE_AUTO_REFRESH must be true or false" ;; esac
+for v in IPV6_GATEWAY_ONLINK PRIVATE_NET PRIVATE_NET_NAT PRIVATE_NET_DHCP HARDENING; do
+    case "${!v}" in true|false) ;; *) die "$v must be true or false" ;; esac
+done
+case "$SUBSCRIPTION_NAG" in hide|keep) ;; *) die "SUBSCRIPTION_NAG must be hide or keep" ;; esac
 case "$IP_FORWARDING" in auto|true|false) ;; *) die "IP_FORWARDING must be auto, true or false" ;; esac
 
 [[ "$FQDN" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$ ]] \
@@ -76,15 +82,55 @@ case "$IP_FORWARDING" in auto|true|false) ;; *) die "IP_FORWARDING must be auto,
 [[ "$PVE_ISO" == "latest" || "$PVE_ISO" =~ ^proxmox-ve_[0-9]+\.[0-9]+-[0-9]+\.iso$ ]] || die "invalid PVE_ISO"
 
 ip_re='^([0-9]{1,3}\.){3}[0-9]{1,3}$|^[0-9A-Fa-f:]+$'
-if [ "$NETWORK_MODE" = "static" ]; then
-    [[ "$IP_CIDR" =~ ^(([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}|[0-9A-Fa-f:]+/[0-9]{1,3})$ ]] \
-        || die "static mode needs IP_CIDR like 192.0.2.10/24"
-    [[ "$GATEWAY" =~ $ip_re ]] || die "static mode needs GATEWAY"
+if [ -z "$IP_CIDR$IPV6_CIDR" ]; then
+    die "set an IPv4 address (IP_CIDR + GATEWAY) or an IPv6 address (IPV6_CIDR + IPV6_GATEWAY), or both. DHCP is not supported."
+fi
+if [ -n "$IP_CIDR$GATEWAY" ]; then
+    [[ "$IP_CIDR" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]] || die "IP_CIDR needs an address with prefix, for example 192.0.2.10/24"
+    [[ "$GATEWAY" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || die "GATEWAY is required together with IP_CIDR, for example 192.0.2.1"
+fi
+if [ -n "$IPV6_CIDR$IPV6_GATEWAY" ]; then
+    [[ "$IPV6_CIDR" =~ ^[0-9A-Fa-f:]+:[0-9A-Fa-f:]*/[0-9]{1,3}$ ]] || die "IPV6_CIDR needs an address with prefix, like 2001:db8::10/64"
+    [[ "$IPV6_GATEWAY" =~ ^[0-9A-Fa-f:]+$ ]] || die "IPV6_GATEWAY is required together with IPV6_CIDR"
+fi
+command -v python3 >/dev/null || die "missing tool: python3"
+if [ -n "$IP_CIDR" ]; then
+    python3 -c 'import ipaddress,sys; i=ipaddress.ip_interface(sys.argv[1]); sys.exit(0 if ipaddress.ip_address(sys.argv[2]) in i.network else 1)' "$IP_CIDR" "$GATEWAY" \
+        || echo "WARNING: the IPv4 gateway $GATEWAY is outside of $IP_CIDR. The installer may reject this, see README (routed gateways)." >&2
+fi
+
+[ "$PRIVATE_NET_CIDR" = "none" ] && PRIVATE_NET=false
+if [ "$PRIVATE_NET" = "true" ] && [ -z "$IP_CIDR" ] && [ "$PRIVATE_NET_NAT" = "true" ]; then
+    echo "NOTE: no IPv4 uplink, source NAT for the private network is switched off." >&2
+    PRIVATE_NET_NAT=false
+fi
+
+# Private network: derive network, mask and DHCP range from PRIVATE_NET_CIDR
+PRIVATE_NET_NETWORK="" PRIVATE_NET_ADDRESS="" PRIVATE_NET_MASK="" PRIVATE_NET_DHCP_START="" PRIVATE_NET_DHCP_END=""
+if [ "$PRIVATE_NET" = "true" ]; then
+    command -v python3 >/dev/null || die "missing tool: python3"
+    # shellcheck disable=SC2034  # exported through the generated settings below
+    read -r PRIVATE_NET_NETWORK PRIVATE_NET_ADDRESS PRIVATE_NET_MASK PRIVATE_NET_DHCP_START PRIVATE_NET_DHCP_END < <(
+        python3 - "$PRIVATE_NET_CIDR" <<'PY' || true
+import ipaddress, sys
+i = ipaddress.ip_interface(sys.argv[1])
+n = i.network
+if not (n.version == 4 and 16 <= n.prefixlen <= 24 and n.is_private):
+    sys.exit(1)
+print(n, i.ip, n.netmask, n.network_address + 100, n.network_address + 200)
+PY
+    ) || true
+    [ -n "$PRIVATE_NET_NETWORK" ] || die "PRIVATE_NET_CIDR must be a private IPv4 address with a /16 to /24 prefix, like 10.10.0.1/24"
 fi
 
 read -r -a DNS_ARRAY <<< "$DNS_SERVERS"
 [ "${#DNS_ARRAY[@]}" -ge 1 ] || die "DNS_SERVERS is empty"
 for d in "${DNS_ARRAY[@]}"; do [[ "$d" =~ $ip_re ]] || die "invalid DNS server '$d'"; done
+if [ -z "$IP_CIDR" ]; then
+    # IPv6 only: IPv6 resolvers first, IPv4 resolvers cannot be reached anyway
+    DNS_SERVERS=$(printf '%s\n' "${DNS_ARRAY[@]}" | awk '/:/ {print "6 " $0; next} {print "4 " $0}' | sort -s -k1,1r | cut -d' ' -f2 | tr '\n' ' ' | sed 's/ $//')
+    read -r -a DNS_ARRAY <<< "$DNS_SERVERS"
+fi
 
 read -r -a DISK_ARRAY <<< "$DISK_LIST"
 [ "${#DISK_ARRAY[@]}" -ge 1 ] || die "DISK_LIST is empty"
@@ -163,19 +209,24 @@ echo "    $KEY_COUNT key(s)"
 ROOT_HASH=$(openssl passwd -6 "$(openssl rand -base64 48)")
 
 # ---- Answer file ------------------------------------------------------------
-if [ "$NETWORK_MODE" = "static" ]; then
-    NETWORK_BLOCK=$(cat <<NET
+# The installer takes one address. IPv4 if there is one, the IPv6 address is added on the first boot.
+if [ -n "$IP_CIDR" ]; then
+    INSTALL_CIDR="$IP_CIDR"; INSTALL_GATEWAY="$GATEWAY"
+    INSTALL_DNS=$(printf '%s\n' "${DNS_ARRAY[@]}" | grep -v ':' | head -1)
+else
+    INSTALL_CIDR="$IPV6_CIDR"; INSTALL_GATEWAY="$IPV6_GATEWAY"
+    INSTALL_DNS="${DNS_ARRAY[0]}"
+fi
+[ -n "$INSTALL_DNS" ] || die "DNS_SERVERS needs at least one resolver of the address family you use"
+NETWORK_BLOCK=$(cat <<NET
 [network]
 source = "from-answer"
-cidr = "$IP_CIDR"
-dns = "${DNS_ARRAY[0]}"
-gateway = "$GATEWAY"
+cidr = "$INSTALL_CIDR"
+dns = "$INSTALL_DNS"
+gateway = "$INSTALL_GATEWAY"
 filter.ID_NET_NAME_MAC = "*"
 NET
 )
-else
-    NETWORK_BLOCK=$'[network]\nsource = "from-dhcp"'
-fi
 
 DISKS_JSON=$(printf '%s\n' "${DISK_ARRAY[@]}" | jq -R . | jq -cs .)
 if [ "$TARGET" = "baremetal" ]; then
@@ -228,29 +279,34 @@ fi
 
 TEMPLATES_B64=""
 if [ "${#TEMPLATE_FILES[@]}" -gt 0 ]; then
+    # shellcheck disable=SC2034
     TEMPLATES_B64=$(tar -czf - -C templates generate-template.sh global.conf motd.sh "${TEMPLATE_FILES[@]}" | base64 -w0)
 fi
 
 if [ "$IP_FORWARDING" = "auto" ]; then
-    if [ -n "$ROUTES_B64" ] || [ -n "$SNIPPETS_B64" ]; then IP_FORWARDING=true; else IP_FORWARDING=false; fi
+    if [ -n "$ROUTES_B64" ] || [ -n "$SNIPPETS_B64" ] || [ "$PRIVATE_NET" = "true" ]; then IP_FORWARDING=true; else IP_FORWARDING=false; fi
 fi
 
-sed -e "s|@@TARGET@@|$TARGET|" \
-    -e "s|@@FQDN@@|$FQDN|" \
-    -e "s|@@DNS_SERVERS@@|$DNS_SERVERS|" \
-    -e "s|@@TEMPLATES@@|${TEMPLATE_FILES[*]:-}|" \
-    -e "s|@@HOST_AUTO_UPDATE@@|$HOST_AUTO_UPDATE|" \
-    -e "s|@@TEMPLATE_AUTO_REFRESH@@|$TEMPLATE_AUTO_REFRESH|" \
-    -e "s|@@TEMPLATES_B64@@|$TEMPLATES_B64|" \
-    -e "s|@@BRAND_DOCS_URL@@|$BRAND_DOCS_URL|" \
-    -e "s|@@BRAND_SUPPORT_URL@@|$BRAND_SUPPORT_URL|" \
-    -e "s|@@IP_FORWARDING@@|$IP_FORWARDING|" \
-    -e "s|@@MGMT_ALLOWED@@|$MGMT_ALLOWED|" \
-    -e "s|@@ROUTES_B64@@|$ROUTES_B64|" \
-    -e "s|@@SNIPPETS_B64@@|$SNIPPETS_B64|" \
-    scripts/first-boot.sh > work/first-boot.sh
+# Settings are written with printf %q, so every value is quoted safely
+{
+    echo "# --- generated by build-iso.sh ---"
+    for v in TARGET FQDN KEYBOARD DNS_SERVERS HOST_AUTO_UPDATE HARDENING SUBSCRIPTION_NAG IP_FORWARDING MGMT_ALLOWED \
+             IP_CIDR IPV6_CIDR IPV6_GATEWAY IPV6_GATEWAY_ONLINK \
+             PRIVATE_NET PRIVATE_NET_NETWORK PRIVATE_NET_ADDRESS PRIVATE_NET_MASK PRIVATE_NET_NAT PRIVATE_NET_DHCP \
+             PRIVATE_NET_DHCP_START PRIVATE_NET_DHCP_END \
+             TEMPLATE_AUTO_REFRESH BRAND_DOCS_URL BRAND_SUPPORT_URL \
+             ROUTES_B64 SNIPPETS_B64 TEMPLATES_B64; do
+        printf '%s=%q\n' "$v" "${!v}"
+    done
+    printf 'PRIVATE_NET_CIDR=%q\n' "$PRIVATE_NET_CIDR"
+    printf 'TEMPLATES=%q\n' "${TEMPLATE_FILES[*]:-}"
+    echo "# --- end of generated settings ---"
+} > work/settings.sh
+
+awk 'FNR==NR { settings = settings $0 "\n"; next } /^#@@SETTINGS@@$/ { printf "%s", settings; next } { print }' \
+    work/settings.sh scripts/first-boot.sh > work/first-boot.sh
 bash -n work/first-boot.sh
-if grep -q '@@' work/first-boot.sh; then die "unreplaced placeholder in first-boot.sh"; fi
+grep -q '^TARGET=' work/first-boot.sh || die "settings were not inserted into first-boot.sh"
 FB_SIZE=$(stat -c %s work/first-boot.sh)
 [ "$FB_SIZE" -lt 1000000 ] || die "first-boot.sh is $FB_SIZE bytes, the limit is 1 MiB"
 echo "==> first-boot.sh: $FB_SIZE bytes, templates: ${TEMPLATE_FILES[*]:-none}"
@@ -274,7 +330,6 @@ proxmox-auto-install-assistant inspect-iso "$OUT_DIR/$OUT_NAME" || echo "(inspec
 cat > "$OUT_DIR/build-info.env" <<INFO
 PVE_ISO=$PVE_ISO
 TARGET=$TARGET
-NETWORK_MODE=$NETWORK_MODE
 FQDN=$FQDN
 TEMPLATE_LIST="${TEMPLATE_LIST:-none}"
 INFO
