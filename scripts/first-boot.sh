@@ -1,59 +1,210 @@
 #!/bin/bash
-# Runs once after the first boot of the installed Proxmox VE (see [first-boot] in the answer file).
-# Values marked with @@ are filled in by build-iso.sh.
+# Runs once after the first boot of the installed Proxmox VE ([first-boot] in the answer file).
+# Placeholders between double at signs are filled in by build-iso.sh. Log: /var/log/first-boot-custom.log
 set -u
 
 LOG=/var/log/first-boot-custom.log
+STATUS=/var/lib/first-boot-custom.status
 exec >>"$LOG" 2>&1
 echo "=== first boot $(date) ==="
 
+TARGET="@@TARGET@@"
+FQDN="@@FQDN@@"
+DNS_SERVERS="@@DNS_SERVERS@@"
 TEMPLATES="@@TEMPLATES@@"
 GENERATOR_REPO="@@GENERATOR_REPO@@"
 GENERATOR_REF="@@GENERATOR_REF@@"
+IP_FORWARDING="@@IP_FORWARDING@@"
+MGMT_ALLOWED="@@MGMT_ALLOWED@@"
+ROUTES_B64="@@ROUTES_B64@@"
+SNIPPETS_B64="@@SNIPPETS_B64@@"
 
-# 1. One global storage: give the whole disk to the root volume
-lvextend -l +100%FREE -r /dev/pve/root || echo "lvextend skipped or failed"
-pvesm remove local-lvm 2>/dev/null || true
-pvesm set local --content iso,vztmpl,backup,snippets,images,rootdir
+FAILED=()
+step() {
+    local name=$1
+    shift
+    echo "--- $name"
+    if "$@"; then
+        echo "ok: $name"
+    else
+        echo "FAILED: $name"
+        FAILED+=("$name")
+    fi
+}
 
-# 2. SSH: key login only (root password is random and unknown)
-mkdir -p /etc/ssh/sshd_config.d
-cat > /etc/ssh/sshd_config.d/10-hardening.conf <<'SSHD'
+wait_for_network() {
+    for _ in $(seq 1 36); do
+        ping -c1 -W2 1.1.1.1 >/dev/null 2>&1 && return 0
+        sleep 5
+    done
+    echo "no network after 3 minutes"
+    return 1
+}
+
+storage_vps() {
+    # One global storage: the root volume takes the whole disk
+    lvextend -l +100%FREE -r /dev/pve/root || return 1
+    pvesm remove local-lvm 2>/dev/null || true
+    pvesm set local --content iso,vztmpl,backup,snippets,images,rootdir
+}
+
+storage_baremetal() {
+    # ZFS install: "local" (directory) and "local-zfs" (VM disks) exist already
+    pvesm set local --content iso,vztmpl,backup,snippets
+}
+
+ssh_hardening() {
+    mkdir -p /etc/ssh/sshd_config.d
+    cat > /etc/ssh/sshd_config.d/10-hardening.conf <<'SSHD'
 PermitRootLogin prohibit-password
 PasswordAuthentication no
+KbdInteractiveAuthentication no
 SSHD
-systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+    sshd -t && { systemctl reload ssh 2>/dev/null || systemctl reload sshd; }
+}
 
-# 3. Repositories: no-subscription instead of enterprise
-for f in /etc/apt/sources.list.d/pve-enterprise.sources /etc/apt/sources.list.d/ceph.sources; do
-    [ -f "$f" ] && ! grep -q '^Enabled: no' "$f" && sed -i '$a Enabled: no' "$f"
-done
-cat > /etc/apt/sources.list.d/proxmox-no-subscription.sources <<'APT'
+apt_repos() {
+    local f
+    for f in /etc/apt/sources.list.d/pve-enterprise.sources /etc/apt/sources.list.d/ceph.sources; do
+        if [ -f "$f" ] && ! grep -q '^Enabled: no' "$f"; then
+            sed -i '$a Enabled: no' "$f"
+        fi
+    done
+    cat > /etc/apt/sources.list.d/proxmox-no-subscription.sources <<'APT'
 Types: deb
 URIs: http://download.proxmox.com/debian/pve
 Suites: trixie
 Components: pve-no-subscription
 Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 APT
+}
 
-# 4. Wait for the network (max 3 minutes)
-for i in $(seq 1 36); do
-    ping -c1 -W2 1.1.1.1 >/dev/null 2>&1 && break
-    sleep 5
-done
-
-# 5. VM templates from the template generator (optional)
-if [ -n "$TEMPLATES" ]; then
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y git libguestfs-tools wget
-    rm -rf /opt/proxmox-template-generator
-    git clone --depth 1 --branch "$GENERATOR_REF" "https://github.com/$GENERATOR_REPO" /opt/proxmox-template-generator
-    cd /opt/proxmox-template-generator || exit 0
-    for t in $TEMPLATES; do
-        echo "--- template $t ---"
-        DEFAULT_STORAGE=local DEFAULT_BRIDGE=vmbr0 TEMPLATE_IPCONFIG=ip=dhcp \
-            bash generate-template.sh "configs/$t.conf" </dev/null || echo "template $t failed"
+dns() {
+    # Proxmox and glibc use at most three resolvers, the rest is ignored
+    local args=(--search "${FQDN#*.}") i=1 d
+    for d in $DNS_SERVERS; do
+        if [ "$i" -le 3 ]; then
+            args+=("--dns$i" "$d")
+        else
+            echo "note: resolver $d is not used (limit of three)"
+        fi
+        i=$((i + 1))
     done
+    pvesh set "/nodes/$(hostname -s)/dns" "${args[@]}"
+}
+
+forwarding() {
+    cat > /etc/sysctl.d/99-ip-forwarding.conf <<'SYSCTL'
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+SYSCTL
+    sysctl --system >/dev/null
+}
+
+interface_snippets() {
+    mkdir -p /etc/network/interfaces.d
+    echo "$SNIPPETS_B64" | base64 -d | tar -xzf - -C /etc/network/interfaces.d || return 1
+    grep -q '^source /etc/network/interfaces.d/' /etc/network/interfaces \
+        || echo 'source /etc/network/interfaces.d/*' >> /etc/network/interfaces
+    ifreload -a
+}
+
+static_routes() {
+    echo "$ROUTES_B64" | base64 -d > /etc/proxmox-static-routes.conf
+    cat > /usr/local/sbin/apply-static-routes <<'APPLY'
+#!/bin/bash
+# Applies /etc/proxmox-static-routes.conf (syntax of "ip route", prefix "-6 " for IPv6)
+rc=0
+while IFS= read -r line; do
+    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+    if [[ "$line" == -6\ * ]]; then
+        # shellcheck disable=SC2086
+        ip -6 route replace ${line#-6 } || rc=1
+    else
+        # shellcheck disable=SC2086
+        ip route replace $line || rc=1
+    fi
+done < /etc/proxmox-static-routes.conf
+exit $rc
+APPLY
+    chmod 755 /usr/local/sbin/apply-static-routes
+    cat > /etc/systemd/system/static-routes.service <<'UNIT'
+[Unit]
+Description=Apply static routes
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/apply-static-routes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    systemctl daemon-reload
+    systemctl enable --now static-routes.service
+}
+
+host_firewall() {
+    local c
+    {
+        echo "[OPTIONS]"
+        echo "enable: 1"
+        echo "policy_in: DROP"
+        echo "policy_out: ACCEPT"
+        echo
+        echo "[IPSET mgmt]"
+        for c in $MGMT_ALLOWED; do echo "$c"; done
+        echo
+        echo "[RULES]"
+        echo "IN ACCEPT -source +mgmt -p tcp -dport 22"
+        echo "IN ACCEPT -source +mgmt -p tcp -dport 8006"
+        echo "IN ACCEPT -p icmp"
+        echo "IN ACCEPT -p ipv6-icmp"
+        echo "IN ACCEPT -p udp -sport 67 -dport 68"
+    } > /etc/pve/firewall/cluster.fw
+    systemctl enable --now pve-firewall
+}
+
+vm_templates() {
+    local storage=local
+    [ "$TARGET" = "baremetal" ] && storage=local-zfs
+    apt-get update || return 1
+    DEBIAN_FRONTEND=noninteractive apt-get install -y git libguestfs-tools wget || return 1
+    rm -rf /opt/proxmox-template-generator
+    git clone --depth 1 --branch "$GENERATOR_REF" "https://github.com/$GENERATOR_REPO" /opt/proxmox-template-generator || return 1
+    cd /opt/proxmox-template-generator || return 1
+    local t rc=0
+    for t in $TEMPLATES; do
+        echo "--- template $t"
+        DEFAULT_STORAGE=$storage DEFAULT_BRIDGE=vmbr0 TEMPLATE_IPCONFIG=ip=dhcp \
+            bash generate-template.sh "configs/$t.conf" </dev/null || { echo "template $t failed"; rc=1; }
+    done
+    return $rc
+}
+
+if [ "$TARGET" = "vps" ]; then
+    step "storage (one global storage)" storage_vps
+else
+    step "storage (zfs)" storage_baremetal
+fi
+step "ssh hardening" ssh_hardening
+step "apt repositories" apt_repos
+step "dns" dns
+[ "$IP_FORWARDING" = "true" ] && step "ip forwarding" forwarding
+[ -n "$SNIPPETS_B64" ] && step "interface snippets" interface_snippets
+[ -n "$ROUTES_B64" ] && step "static routes" static_routes
+[ -n "$MGMT_ALLOWED" ] && step "host firewall" host_firewall
+if [ -n "$TEMPLATES" ]; then
+    step "network" wait_for_network
+    step "vm templates" vm_templates
 fi
 
-echo "=== first boot done $(date) ==="
+if [ "${#FAILED[@]}" -eq 0 ]; then
+    echo "OK $(date)" > "$STATUS"
+    echo "=== first boot finished without errors ==="
+else
+    echo "FAILED: ${FAILED[*]}" > "$STATUS"
+    echo "=== first boot finished with errors: ${FAILED[*]} ==="
+fi
