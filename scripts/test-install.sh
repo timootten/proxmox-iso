@@ -85,6 +85,9 @@ check() {
     fi
 }
 
+echo "==> System information"
+"${SSH[@]}" 'echo "running kernel: $(uname -r)"; echo "installed kernels:"; ls /boot/vmlinuz-*; apt-cache policy proxmox-default-kernel | head -4; pveversion; grep -E "kernel .* is installed|rebooting|could not be installed|^(ok|FAILED):" /var/log/first-boot-custom.log' || true
+
 echo "==> Checks"
 check "first boot finished without errors" 'grep -q "^OK" /var/lib/first-boot-custom.status'
 check "Proxmox VE installed" 'pveversion | grep -q "^pve-manager/9"'
