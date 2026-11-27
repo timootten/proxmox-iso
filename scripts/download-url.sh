@@ -23,4 +23,11 @@ URL=$(curl -sI \
     "https://api.github.com/repos/$REPO/releases/assets/$ASSET_ID" \
     | awk 'tolower($1)=="location:" {print $2}' | tr -d '\r')
 [ -n "$URL" ] || { echo "GitHub did not return a download location" >&2; exit 1; }
+
+# Drop the "jwt" parameter. It is not needed (the signature is enough) and GitHub Actions masks it
+# as "***" in the run summary, which made the printed URL unusable.
+URL=$(echo "$URL" | sed -E 's/([?&])jwt=[^&]*&?/\1/; s/[?&]$//')
+
+# Make sure the cleaned URL really works
+curl -sfI -o /dev/null "$URL" || { echo "The download URL does not work without the jwt parameter" >&2; exit 1; }
 echo "$URL"

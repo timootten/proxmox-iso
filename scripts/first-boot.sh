@@ -450,9 +450,9 @@ fi
 [ "$IP_FORWARDING" = "true" ] && step "ip forwarding" forwarding
 [ -n "$IPV6_CIDR" ] && [ -n "$IP_CIDR" ] && step "ipv6" ipv6_config
 [ "$PRIVATE_NET" = "true" ] && step "private network vmbr1" private_net
-[ "$PRIVATE_NET" = "true" ] && [ "$PRIVATE_NET_DHCP" = "true" ] && step "dhcp on vmbr1" private_dhcp
 [ -n "$SNIPPETS_B64" ] && step "interface snippets" interface_snippets
 step "network reload" network_reload
+[ "$PRIVATE_NET" = "true" ] && [ "$PRIVATE_NET_DHCP" = "true" ] && step "dhcp on vmbr1" private_dhcp
 [ -n "$ROUTES_B64" ] && step "static routes" static_routes
 [ -n "$MGMT_ALLOWED" ] && step "host firewall" host_firewall
 
