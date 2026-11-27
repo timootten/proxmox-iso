@@ -85,7 +85,9 @@ jobs:
           set -euo pipefail
           . out/build-info.env
           VER=$(echo "$PVE_ISO" | sed -E 's/proxmox-ve_(.*)\.iso/\1/')
-          TAG="iso-${VER}-${GITHUB_RUN_NUMBER}"
+          # The tag ends with the first 8 characters of the ISO's SHA-256, so every URL points to exactly one file
+          HASH=$(cut -c1-8 out/proxmox-ve-auto.iso.sha256)
+          TAG="iso-${VER}-${HASH}"
           BASE="https://github.com/$GITHUB_REPOSITORY/releases"
           cat > notes.md <<NOTES
           Unattended Proxmox VE installer.
@@ -104,8 +106,8 @@ jobs:
           Login is by SSH key only. Set a password with \`passwd\` to use the web interface.
           NOTES
           gh release create "$TAG" out/proxmox-ve-auto.iso out/proxmox-ve-auto.iso.sha256 \
-            --repo "$GITHUB_REPOSITORY" --title "Proxmox VE $VER ($TARGET, build $GITHUB_RUN_NUMBER)" \
-            --notes-file notes.md --latest
+            --repo "$GITHUB_REPOSITORY" --title "Proxmox VE $VER ($TARGET, $HASH)" \
+            --notes-file notes.md
 
           # Keep the five newest ISO releases
           gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' \
@@ -115,13 +117,11 @@ jobs:
           {
             echo "## ISO ready: $TAG"
             echo
-            echo "URL for the ISO import of your hosting panel (always the newest build):"
+            echo "URL for the ISO import of your hosting panel:"
             echo
             echo '```'
-            echo "$BASE/latest/download/proxmox-ve-auto.iso"
+            echo "$BASE/download/$TAG/proxmox-ve-auto.iso"
             echo '```'
-            echo
-            echo "This build only: \`$BASE/download/$TAG/proxmox-ve-auto.iso\`"
             echo
             echo "SHA-256: \`$(cut -d' ' -f1 out/proxmox-ve-auto.iso.sha256)\`"
           } >> "$GITHUB_STEP_SUMMARY"
